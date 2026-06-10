@@ -155,7 +155,7 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 
 | Milestone | Status | PR | Tag |
 |---|---|---|---|
-| M0 | ⬜ | — | — |
+| M0 | ✅ | [#1](https://github.com/prajwalmahajan101/toykv/pull/1) | `v0.0.0` |
 | M1 | ⬜ | — | — |
 | M2 | ⬜ | — | — |
 | M3 | ⬜ | — | — |
