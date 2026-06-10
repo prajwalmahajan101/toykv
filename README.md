@@ -1,6 +1,8 @@
 # toykv
 
-> Single-node in-memory KV store in Go. RESP2 wire protocol, AOF persistence, TTL, companion TUI.
+[![CI](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml)
+
+> Single-node in-memory KV store in Go. RESP2 wire protocol, AOF persistence, TTL, companion CLI and TUI.
 
 Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (append, replay, durable), toykv exercises the **map** pattern (in-memory, mutable, expirable). Two foundational network-server primitives, one Go module each.
 
