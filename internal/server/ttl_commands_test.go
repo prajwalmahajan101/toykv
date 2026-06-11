@@ -263,25 +263,19 @@ func TestSet_OverwriteWithoutExpiryClearsTTL(t *testing.T) {
 	})
 }
 
-// TestPRB_AOFAppendsAreV1Shape documents the milestone-B asymmetry:
-// SET-with-TTL appends only the v1-shape (no PXAT token), so replay
-// (in a separate server process / restart) will produce a key WITHOUT
-// the TTL. PR C closes this by bumping the AOF version and appending
-// canonical PXAT. The test verifies the asymmetry exists exactly as
-// described — when PR C lands and reverses it, this test should fail
-// and be deleted as part of the v2 cutover.
-func TestPRB_AOFAppendsAreV1Shape(t *testing.T) {
-	fc := newFakeClock(fakeEpoch)
+// TestAOFRoundTrip_PreservesTTLs is the positive contract M4 promises:
+// SET / EXPIRE / PERSIST all survive a clean restart with their TTL
+// state intact. Replaces the PR B "v1-shape asymmetry" test that
+// pinned the temporary regression — the asymmetry is closed by PR C
+// (AOF v2 + canonical PXAT append; ADR-0004).
+func TestAOFRoundTrip_PreservesTTLs(t *testing.T) {
 	dir := t.TempDir()
-	cfgClock := fc.now
 
-	// First server: SET k v EX 60, then stop cleanly (drains AOF).
 	mkServer := func() *Server {
 		s, err := New(Config{
 			Addr:        "127.0.0.1:0",
 			Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-			Store:       store.NewWithClock(cfgClock),
-			NowFunc:     cfgClock,
+			Store:       store.New(),
 			Dir:         dir,
 			SweeperOpts: store.SweeperOptions{Interval: time.Hour},
 		})
@@ -291,49 +285,76 @@ func TestPRB_AOFAppendsAreV1Shape(t *testing.T) {
 		return s
 	}
 
-	s1 := mkServer()
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() { errCh <- s1.Run(ctx) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for s1.Addr() == "" && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	start := func(s *Server) (context.CancelFunc, <-chan error) {
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() { errCh <- s.Run(ctx) }()
+		deadline := time.Now().Add(2 * time.Second)
+		for s.Addr() == "" && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return cancel, errCh
 	}
+
+	// Writer process: a (SET ... EX), an EXPIRE-set TTL, a PERSIST'd
+	// key (born with TTL, TTL cleared), and a plain SET — all four
+	// modes the AOF must round-trip.
+	s1 := mkServer()
+	cancel1, err1 := start(s1)
 	c, r, w := dial(t, s1.Addr())
-	writeCmd(t, w, "SET", "k", "v", "EX", "60")
+	writeCmd(t, w, "SET", "a", "v", "EX", "60")
 	expectSimple(t, r, "OK")
-	writeCmd(t, w, "PTTL", "k")
-	expectInt(t, r, 60_000)
+	writeCmd(t, w, "SET", "b", "v")
+	expectSimple(t, r, "OK")
+	writeCmd(t, w, "EXPIRE", "b", "120")
+	expectInt(t, r, 1)
+	writeCmd(t, w, "SET", "c", "v", "PX", "30000")
+	expectSimple(t, r, "OK")
+	writeCmd(t, w, "PERSIST", "c")
+	expectInt(t, r, 1)
+	writeCmd(t, w, "SET", "d", "v")
+	expectSimple(t, r, "OK")
 	c.Close()
-	cancel()
-	<-errCh
+	cancel1()
+	<-err1
 	if err := s1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Second server: same dir, fresh process state.
+	// Reader process: fresh in-memory state, same dir.
 	s2 := mkServer()
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	errCh2 := make(chan error, 1)
-	go func() { errCh2 <- s2.Run(ctx2) }()
-	deadline = time.Now().Add(2 * time.Second)
-	for s2.Addr() == "" && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	cancel2, err2 := start(s2)
 	defer func() {
 		cancel2()
-		<-errCh2
+		<-err2
 		_ = s2.Close()
 	}()
 	c2, r2, w2 := dial(t, s2.Addr())
 	defer c2.Close()
 
-	// Value survived…
-	writeCmd(t, w2, "GET", "k")
-	expectBulk(t, r2, "v")
-	// …but TTL did NOT — this is PR B's documented asymmetry.
-	writeCmd(t, w2, "TTL", "k")
+	// a: SET ... EX 60 → TTL ≈ 60 (allow off-by-one second).
+	writeCmd(t, w2, "TTL", "a")
+	got := readReply(t, r2)
+	if got.Kind != resp.KindInteger || got.Int < 50 || got.Int > 60 {
+		t.Errorf("TTL a = %+v, want ~60", got)
+	}
+	// b: EXPIRE 120 → TTL ≈ 120.
+	writeCmd(t, w2, "TTL", "b")
+	got = readReply(t, r2)
+	if got.Kind != resp.KindInteger || got.Int < 110 || got.Int > 120 {
+		t.Errorf("TTL b = %+v, want ~120", got)
+	}
+	// c: was SET ... PX 30000, then PERSIST'd → no TTL.
+	writeCmd(t, w2, "TTL", "c")
 	expectInt(t, r2, -1)
+	// d: plain SET → no TTL.
+	writeCmd(t, w2, "TTL", "d")
+	expectInt(t, r2, -1)
+	// Values intact.
+	for _, k := range []string{"a", "b", "c", "d"} {
+		writeCmd(t, w2, "GET", k)
+		expectBulk(t, r2, "v")
+	}
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
