@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/prajwalmahajan101/toykv/internal/server"
+	"github.com/prajwalmahajan101/toykv/internal/store"
 )
 
 const usage = `toykv — in-memory key-value store server
@@ -41,7 +42,7 @@ func main() {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	s, err := server.New(server.Config{Addr: *addr, Log: log})
+	s, err := server.New(server.Config{Addr: *addr, Log: log, Store: store.New()})
 	if err != nil {
 		log.Error("server init failed", "err", err)
 		os.Exit(1)

@@ -11,15 +11,17 @@ import (
 	"time"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
+	"github.com/prajwalmahajan101/toykv/internal/store"
 )
 
-// setupServer constructs a Server bound to a random port. Use runServer
-// to start it.
+// setupServer constructs a Server bound to a random port with a fresh
+// in-memory store. Use runServer to start it.
 func setupServer(t *testing.T) *Server {
 	t.Helper()
 	s, err := New(Config{
-		Addr: "127.0.0.1:0",
-		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Addr:  "127.0.0.1:0",
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store: store.New(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -280,8 +282,14 @@ func TestMultipleConcurrentConns(t *testing.T) {
 }
 
 func TestNew_RejectsEmptyAddr(t *testing.T) {
-	if _, err := New(Config{}); err == nil {
+	if _, err := New(Config{Store: store.New()}); err == nil {
 		t.Fatal("want error for empty addr, got nil")
+	}
+}
+
+func TestNew_RejectsNilStore(t *testing.T) {
+	if _, err := New(Config{Addr: ":0"}); err == nil {
+		t.Fatal("want error for nil store, got nil")
 	}
 }
 
