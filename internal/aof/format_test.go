@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestHeader_RoundTrip(t *testing.T) {
+func TestHeader_RoundTrip_CurrentVersion(t *testing.T) {
 	var buf bytes.Buffer
 	if err := writeHeader(&buf); err != nil {
 		t.Fatalf("writeHeader: %v", err)
@@ -18,8 +18,27 @@ func TestHeader_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readHeader: %v", err)
 	}
-	if v != Version1 {
-		t.Fatalf("version = %x, want %x", v, Version1)
+	if v != CurrentVersion {
+		t.Fatalf("version = %x, want CurrentVersion %x", v, CurrentVersion)
+	}
+}
+
+// readHeader must accept every byte in the supported set — v1 (written
+// by pre-M4 binaries) and v2 (written by M4+). Older v1 files must
+// continue to replay on M4+ binaries; this test pins that contract.
+func TestHeader_AcceptsAllSupportedVersions(t *testing.T) {
+	for _, want := range supportedVersions {
+		hdr := make([]byte, HeaderLen)
+		copy(hdr, Magic[:])
+		hdr[HeaderLen-1] = want
+		got, err := readHeader(bytes.NewReader(hdr))
+		if err != nil {
+			t.Errorf("readHeader v=0x%02x: %v", want, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("readHeader v=0x%02x returned %x", want, got)
+		}
 	}
 }
 
