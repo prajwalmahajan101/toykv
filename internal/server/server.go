@@ -9,19 +9,23 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prajwalmahajan101/toykv/internal/store"
 )
 
 // Config holds server configuration. Future milestones add Dir +
-// FsyncPolicy (M4) and other knobs.
+// FsyncPolicy (M3) and other knobs.
 type Config struct {
-	Addr string       // TCP listen address, e.g. ":6390"
-	Log  *slog.Logger // structured logger; nil ⇒ slog.Default()
+	Addr  string       // TCP listen address, e.g. ":6390"
+	Log   *slog.Logger // structured logger; nil ⇒ slog.Default()
+	Store *store.Store // backing key-value store; must be non-nil
 }
 
 // Server is the TCP listener and command dispatcher.
 type Server struct {
-	cfg Config
-	log *slog.Logger
+	cfg   Config
+	log   *slog.Logger
+	store *store.Store
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -34,10 +38,13 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Addr == "" {
 		return nil, errors.New("server: Config.Addr must be set")
 	}
+	if cfg.Store == nil {
+		return nil, errors.New("server: Config.Store must be set")
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Server{cfg: cfg, log: cfg.Log}, nil
+	return &Server{cfg: cfg, log: cfg.Log, store: cfg.Store}, nil
 }
 
 // Addr returns the actual listen address (useful with ":0" in tests).
