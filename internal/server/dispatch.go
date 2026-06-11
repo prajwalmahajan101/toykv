@@ -17,19 +17,26 @@ type handler struct {
 }
 
 // commands is the dispatch table. M1 ships PING + ECHO; M2 adds the
-// store-core commands. Further commands land in M3+.
+// store-core commands; M4 adds TTL ops. Per-command arity bounds; SET's
+// upper bound covers "SET k v NX EX 10" — 6 tokens including the verb.
 var commands = map[string]handler{
-	"PING":    {fn: cmdPing, minArgs: 1, maxArgs: 2},
-	"ECHO":    {fn: cmdEcho, minArgs: 2, maxArgs: 2},
-	"GET":     {fn: cmdGet, minArgs: 2, maxArgs: 2},
-	"SET":     {fn: cmdSet, minArgs: 3, maxArgs: 4},
-	"DEL":     {fn: cmdDel, minArgs: 2, maxArgs: -1},
-	"EXISTS":  {fn: cmdExists, minArgs: 2, maxArgs: -1},
-	"INCR":    {fn: cmdIncr, minArgs: 2, maxArgs: 2},
-	"DECR":    {fn: cmdDecr, minArgs: 2, maxArgs: 2},
-	"KEYS":    {fn: cmdKeys, minArgs: 2, maxArgs: 2},
-	"FLUSHDB": {fn: cmdFlushDB, minArgs: 1, maxArgs: 1},
-	"DBSIZE":  {fn: cmdDBSize, minArgs: 1, maxArgs: 1},
+	"PING":      {fn: cmdPing, minArgs: 1, maxArgs: 2},
+	"ECHO":      {fn: cmdEcho, minArgs: 2, maxArgs: 2},
+	"GET":       {fn: cmdGet, minArgs: 2, maxArgs: 2},
+	"SET":       {fn: cmdSet, minArgs: 3, maxArgs: -1},
+	"DEL":       {fn: cmdDel, minArgs: 2, maxArgs: -1},
+	"EXISTS":    {fn: cmdExists, minArgs: 2, maxArgs: -1},
+	"INCR":      {fn: cmdIncr, minArgs: 2, maxArgs: 2},
+	"DECR":      {fn: cmdDecr, minArgs: 2, maxArgs: 2},
+	"KEYS":      {fn: cmdKeys, minArgs: 2, maxArgs: 2},
+	"FLUSHDB":   {fn: cmdFlushDB, minArgs: 1, maxArgs: 1},
+	"DBSIZE":    {fn: cmdDBSize, minArgs: 1, maxArgs: 1},
+	"EXPIRE":    {fn: cmdExpire, minArgs: 3, maxArgs: 3},
+	"PEXPIRE":   {fn: cmdPExpire, minArgs: 3, maxArgs: 3},
+	"PEXPIREAT": {fn: cmdPExpireAt, minArgs: 3, maxArgs: 3},
+	"TTL":       {fn: cmdTTL, minArgs: 2, maxArgs: 2},
+	"PTTL":      {fn: cmdPTTL, minArgs: 2, maxArgs: 2},
+	"PERSIST":   {fn: cmdPersist, minArgs: 2, maxArgs: 2},
 }
 
 // dispatch routes argv to its handler, validating the command exists
