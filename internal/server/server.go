@@ -10,15 +10,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prajwalmahajan101/toykv/internal/aof"
+	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
 )
 
-// Config holds server configuration. Future milestones add Dir +
-// FsyncPolicy (M3) and other knobs.
+// Config holds server configuration.
 type Config struct {
-	Addr  string       // TCP listen address, e.g. ":6390"
-	Log   *slog.Logger // structured logger; nil ⇒ slog.Default()
-	Store *store.Store // backing key-value store; must be non-nil
+	Addr        string          // TCP listen address, e.g. ":6390"
+	Log         *slog.Logger    // structured logger; nil ⇒ slog.Default()
+	Store       *store.Store    // backing key-value store; must be non-nil
+	Dir         string          // AOF data directory; "" disables persistence
+	FsyncPolicy aof.FsyncPolicy // ignored when Dir == ""
 }
 
 // Server is the TCP listener and command dispatcher.
@@ -26,10 +29,12 @@ type Server struct {
 	cfg   Config
 	log   *slog.Logger
 	store *store.Store
+	aof   *aof.Writer // nil ⇒ persistence disabled
 
 	mu       sync.Mutex
 	listener net.Listener
 	wg       sync.WaitGroup
+	closed   bool
 }
 
 // New constructs a Server. It does not open the listener; that happens
@@ -44,7 +49,62 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Server{cfg: cfg, log: cfg.Log, store: cfg.Store}, nil
+	s := &Server{cfg: cfg, log: cfg.Log, store: cfg.Store}
+
+	if cfg.Dir != "" {
+		// Replay first so any AOF parse failure is surfaced before we
+		// open the listener. Replay uses an internal dispatch path that
+		// applies commands directly to the store and never re-appends.
+		stats, err := aof.Replay(cfg.Dir, s.replayApply)
+		if err != nil {
+			return nil, fmt.Errorf("server: aof replay: %w", err)
+		}
+		w, err := aof.Open(cfg.Dir, cfg.FsyncPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("server: aof open: %w", err)
+		}
+		s.aof = w
+		s.log.Info("aof ready",
+			"dir", cfg.Dir,
+			"fsync", cfg.FsyncPolicy.String(),
+			"replay_records", stats.Records,
+			"replay_bytes", stats.Bytes,
+			"replay_duration", stats.Duration,
+		)
+	}
+	return s, nil
+}
+
+// replayApply runs a command from the AOF through the normal dispatch
+// path. Because s.aof is still nil during replay, the mutating handlers
+// no-op their appendIfLive — the same code serves both replay and live
+// traffic without a second handler table.
+func (s *Server) replayApply(argv [][]byte) error {
+	reply := s.dispatch(argv)
+	if reply.Kind == resp.KindError {
+		return errors.New(reply.Str)
+	}
+	return nil
+}
+
+// Close drains the AOF (flush + fsync) and closes the file. It does not
+// stop the listener — use the ctx passed to Run for that. Close is safe
+// to call multiple times; subsequent calls are no-ops.
+func (s *Server) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	w := s.aof
+	s.aof = nil
+	s.mu.Unlock()
+
+	if w == nil {
+		return nil
+	}
+	return w.Close()
 }
 
 // Addr returns the actual listen address (useful with ":0" in tests).
