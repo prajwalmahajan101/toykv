@@ -7,8 +7,35 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+// fakeClock is a manually-advanced clock for deterministic TTL tests.
+// Safe for concurrent reads via the now method; advance must not race
+// with reads in a single test (the lock-upgrade race test uses real
+// time, not fakeClock).
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newFakeClock(seed time.Time) *fakeClock { return &fakeClock{t: seed} }
+
+func (f *fakeClock) now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.t
+}
+
+func (f *fakeClock) advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.t = f.t.Add(d)
+}
+
+var fakeEpoch = time.Unix(1_700_000_000, 0)
 
 func TestGet_Missing(t *testing.T) {
 	s := New()
@@ -212,6 +239,194 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// --- TTL / lazy expiry / sweeper-adjacent behaviour ----------------------
+
+func TestGet_LazyExpire_EvictsOnRead(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("v"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+
+	if v, ok := s.Get("k"); !ok || !bytes.Equal(v, []byte("v")) {
+		t.Fatalf("pre-expiry got (%q,%v), want (v,true)", v, ok)
+	}
+	fc.advance(2 * time.Second)
+	if v, ok := s.Get("k"); ok || v != nil {
+		t.Fatalf("post-expiry got (%q,%v), want (nil,false)", v, ok)
+	}
+	if n := s.DBSize(); n != 0 {
+		t.Fatalf("dbsize after Get-eviction = %d, want 0", n)
+	}
+}
+
+func TestTTL_Sentinels(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+
+	if d := s.TTL("missing"); d != TTLNoKey {
+		t.Fatalf("missing TTL = %v, want TTLNoKey (%v)", d, TTLNoKey)
+	}
+	s.Set("perm", []byte("v"), SetOpts{})
+	if d := s.TTL("perm"); d != TTLNoExpire {
+		t.Fatalf("no-expiry TTL = %v, want TTLNoExpire (%v)", d, TTLNoExpire)
+	}
+	s.Set("temp", []byte("v"), SetOpts{ExpireAt: fc.now().Add(5 * time.Second)})
+	if d := s.TTL("temp"); d != 5*time.Second {
+		t.Fatalf("temp TTL = %v, want 5s", d)
+	}
+	fc.advance(3 * time.Second)
+	if d := s.TTL("temp"); d != 2*time.Second {
+		t.Fatalf("temp TTL after 3s = %v, want 2s", d)
+	}
+	fc.advance(3 * time.Second)
+	if d := s.TTL("temp"); d != TTLNoKey {
+		t.Fatalf("expired TTL = %v, want TTLNoKey", d)
+	}
+}
+
+func TestExpire_OnExisting(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("v"), SetOpts{})
+	if ok := s.Expire("k", fc.now().Add(time.Second)); !ok {
+		t.Fatal("Expire on existing key returned false")
+	}
+	fc.advance(2 * time.Second)
+	if _, ok := s.Get("k"); ok {
+		t.Fatal("key should be expired after Expire + clock advance")
+	}
+}
+
+func TestExpire_OnMissingOrExpired(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	if ok := s.Expire("nope", fc.now().Add(time.Second)); ok {
+		t.Fatal("Expire on missing key returned true")
+	}
+	s.Set("k", []byte("v"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	fc.advance(2 * time.Second)
+	if ok := s.Expire("k", fc.now().Add(time.Hour)); ok {
+		t.Fatal("Expire on already-expired key returned true")
+	}
+	if n := s.DBSize(); n != 0 {
+		t.Fatalf("Expire on expired key should evict; dbsize = %d, want 0", n)
+	}
+}
+
+func TestPersist_RemovesTTL(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("v"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	if ok := s.Persist("k"); !ok {
+		t.Fatal("Persist on TTL'd key returned false")
+	}
+	fc.advance(10 * time.Second)
+	if _, ok := s.Get("k"); !ok {
+		t.Fatal("key should persist after Persist")
+	}
+	if d := s.TTL("k"); d != TTLNoExpire {
+		t.Fatalf("TTL after Persist = %v, want TTLNoExpire", d)
+	}
+}
+
+func TestPersist_NoOpCases(t *testing.T) {
+	s := New()
+	if ok := s.Persist("missing"); ok {
+		t.Fatal("Persist on missing returned true")
+	}
+	s.Set("k", []byte("v"), SetOpts{})
+	if ok := s.Persist("k"); ok {
+		t.Fatal("Persist on key without TTL returned true")
+	}
+}
+
+func TestSet_OverwriteWithoutExpireAtClearsTTL(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("v1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	s.Set("k", []byte("v2"), SetOpts{}) // no ExpireAt
+	fc.advance(10 * time.Second)
+	v, ok := s.Get("k")
+	if !ok || !bytes.Equal(v, []byte("v2")) {
+		t.Fatalf("got (%q,%v), want (v2,true) — overwrite should clear prior TTL", v, ok)
+	}
+}
+
+func TestSet_NX_ExpiredCountsAsAbsent(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("v1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	fc.advance(2 * time.Second)
+	if ok := s.Set("k", []byte("v2"), SetOpts{Mode: SetNX}); !ok {
+		t.Fatal("NX should succeed when prior entry is expired")
+	}
+	v, _ := s.Get("k")
+	if !bytes.Equal(v, []byte("v2")) {
+		t.Fatalf("got %q, want v2", v)
+	}
+}
+
+func TestSet_XX_ExpiredCountsAsAbsent(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("v1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	fc.advance(2 * time.Second)
+	if ok := s.Set("k", []byte("v2"), SetOpts{Mode: SetXX}); ok {
+		t.Fatal("XX should fail when prior entry is expired")
+	}
+}
+
+func TestExists_ExcludesExpired(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("a", []byte("1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	s.Set("b", []byte("2"), SetOpts{})
+	fc.advance(2 * time.Second)
+	if n := s.Exists("a", "b"); n != 1 {
+		t.Fatalf("Exists = %d, want 1 (only b is alive)", n)
+	}
+}
+
+func TestKeys_ExcludesExpired(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("a", []byte("1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	s.Set("b", []byte("2"), SetOpts{})
+	fc.advance(2 * time.Second)
+	got, err := s.Keys("*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "b" {
+		t.Fatalf("Keys = %v, want [b]", got)
+	}
+}
+
+func TestIncr_ExpiredTreatedAsZero(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("k", []byte("100"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	fc.advance(2 * time.Second)
+	n, err := s.Incr("k")
+	if err != nil || n != 1 {
+		t.Fatalf("Incr on expired key got (%d,%v), want (1,nil)", n, err)
+	}
+	if d := s.TTL("k"); d != TTLNoExpire {
+		t.Fatalf("post-Incr TTL = %v, want TTLNoExpire (Incr should clear stale expiry)", d)
+	}
+}
+
+func TestDel_DoesNotCountExpired(t *testing.T) {
+	fc := newFakeClock(fakeEpoch)
+	s := NewWithClock(fc.now)
+	s.Set("a", []byte("1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
+	s.Set("b", []byte("2"), SetOpts{})
+	fc.advance(2 * time.Second)
+	// a is expired but still in the map; b is alive.
+	if n := s.Del("a", "b"); n != 1 {
+		t.Fatalf("Del = %d, want 1 (only b was logically present)", n)
+	}
 }
 
 // guard against accidental change in the package's exported error
