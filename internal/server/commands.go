@@ -59,10 +59,15 @@ func cmdGet(s *Server, argv [][]byte) resp.Value {
 // | EXAT unix-seconds | PXAT unix-milliseconds]. Token order is free;
 // at most one of NX/XX and at most one expiry token may appear.
 //
-// On success it appends the canonical 3-arg form (no NX/XX, no expiry
-// tokens). That keeps the AOF a strict v1 record this milestone — TTLs
-// do not survive restart yet. PR C (AOF v2) introduces canonical PXAT
-// encoding to close the gap.
+// On success it appends the canonical form:
+//   - SET k v          (when no expiry was requested — identical to v1)
+//   - SET k v PXAT ms  (when any expiry was requested — collapses EX /
+//     PX / EXAT / PXAT to a single absolute encoding; NX/XX is stripped
+//     because the conditional already resolved successfully).
+//
+// PXAT preserves wall-clock semantics across restart (ADR-0004) — a
+// relative `PX <ms>` would silently extend the entry's life by the
+// downtime, which is the bug the format was designed to avoid.
 func cmdSet(s *Server, argv [][]byte) resp.Value {
 	opts, err := parseSetOptions(argv[3:], s.now())
 	if err != nil {
@@ -71,7 +76,14 @@ func cmdSet(s *Server, argv [][]byte) resp.Value {
 	if ok := s.store.Set(string(argv[1]), argv[2], opts); !ok {
 		return resp.NullBulk()
 	}
-	if err := s.appendIfLive([][]byte{[]byte("SET"), argv[1], argv[2]}); err != nil {
+	canonical := [][]byte{[]byte("SET"), argv[1], argv[2]}
+	if !opts.ExpireAt.IsZero() {
+		canonical = append(canonical,
+			[]byte("PXAT"),
+			[]byte(strconv.FormatInt(opts.ExpireAt.UnixMilli(), 10)),
+		)
+	}
+	if err := s.appendIfLive(canonical); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.OK()
@@ -236,10 +248,9 @@ func cmdDBSize(s *Server, _ [][]byte) resp.Value {
 }
 
 // cmdExpire implements EXPIRE key seconds. Returns 1 if the key existed
-// and the TTL was set, 0 otherwise.
-//
-// Not appended to the AOF in this milestone (v1 record format cannot
-// express a TTL). PR C adds the canonical PEXPIREAT encoding.
+// and the TTL was set, 0 otherwise. On success it appends the canonical
+// PEXPIREAT form so replay never re-evaluates a relative duration —
+// see ADR-0004.
 func cmdExpire(s *Server, argv [][]byte) resp.Value {
 	return setExpiry(s, argv, time.Second)
 }
@@ -255,25 +266,36 @@ func setExpiry(s *Server, argv [][]byte, unit time.Duration) resp.Value {
 		return resp.Error("ERR value is not an integer or out of range")
 	}
 	expireAt := s.now().Add(time.Duration(n) * unit)
-	if s.store.Expire(string(argv[1]), expireAt) {
-		return resp.Int(1)
-	}
-	return resp.Int(0)
+	return applyExpire(s, argv[1], expireAt)
 }
 
 // cmdPExpireAt implements PEXPIREAT key unix-milliseconds. The absolute
-// form is canonical for AOF replay (PR C) — it's exposed on the wire
-// for Redis compatibility and so replay never needs a non-public
-// command path.
+// form is canonical on the wire AND in the AOF — it's the same shape
+// EXPIRE / PEXPIRE rewrite themselves to before appending.
 func cmdPExpireAt(s *Server, argv [][]byte) resp.Value {
 	ms, err := strconv.ParseInt(string(argv[2]), 10, 64)
 	if err != nil {
 		return resp.Error("ERR value is not an integer or out of range")
 	}
-	if s.store.Expire(string(argv[1]), time.UnixMilli(ms)) {
-		return resp.Int(1)
+	return applyExpire(s, argv[1], time.UnixMilli(ms))
+}
+
+// applyExpire is the shared tail for EXPIRE / PEXPIRE / PEXPIREAT.
+// store.Expire returns false for missing or already-expired keys; in
+// that case we neither append nor return 1.
+func applyExpire(s *Server, key []byte, expireAt time.Time) resp.Value {
+	if !s.store.Expire(string(key), expireAt) {
+		return resp.Int(0)
 	}
-	return resp.Int(0)
+	canonical := [][]byte{
+		[]byte("PEXPIREAT"),
+		key,
+		[]byte(strconv.FormatInt(expireAt.UnixMilli(), 10)),
+	}
+	if err := s.appendIfLive(canonical); err != nil {
+		return resp.Error("ERR aof append failed")
+	}
+	return resp.Int(1)
 }
 
 // cmdTTL returns remaining TTL in seconds. -2 for missing/expired, -1
@@ -300,12 +322,16 @@ func ttlReply(d time.Duration, unit time.Duration) resp.Value {
 }
 
 // cmdPersist clears any TTL on key. Returns 1 if a TTL was removed,
-// 0 if the key was missing or already had no TTL.
-//
-// Not appended to the AOF in this milestone (no v1 representation).
+// 0 if the key was missing or already had no TTL. Appends `PERSIST k`
+// only when a TTL was actually cleared — replay against an empty store
+// applies it as a no-op (PERSIST on missing returns 0, no further
+// effect), which is the desired idempotent shape.
 func cmdPersist(s *Server, argv [][]byte) resp.Value {
-	if s.store.Persist(string(argv[1])) {
-		return resp.Int(1)
+	if !s.store.Persist(string(argv[1])) {
+		return resp.Int(0)
 	}
-	return resp.Int(0)
+	if err := s.appendIfLive(argv); err != nil {
+		return resp.Error("ERR aof append failed")
+	}
+	return resp.Int(1)
 }
