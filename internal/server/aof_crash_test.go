@@ -93,7 +93,7 @@ func TestAOF_CrashInjection_Always(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	child, addr := startChild(t, dir)
+	child, addr := startChild(t, dir, "TestAOF_CrashInjection_Always")
 
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -169,8 +169,11 @@ func TestAOF_CrashInjection_Always(t *testing.T) {
 }
 
 // startChild forks the test binary into server mode and waits for it to
-// print its bound address on stdout.
-func startChild(t *testing.T, dir string) (*exec.Cmd, string) {
+// print its bound address on stdout. parentTest is the name of the
+// caller test — passed through -test.run so the child never tries to
+// execute the rest of the test suite if TestMain ever fails to detect
+// child mode.
+func startChild(t *testing.T, dir, parentTest string) (*exec.Cmd, string) {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -183,7 +186,7 @@ func startChild(t *testing.T, dir string) (*exec.Cmd, string) {
 	}
 	addr := "127.0.0.1:" + strconv.Itoa(port)
 
-	cmd := exec.Command(exe, "-test.run=TestAOF_CrashInjection_Always", "-test.timeout=60s")
+	cmd := exec.Command(exe, "-test.run=^"+parentTest+"$", "-test.timeout=60s")
 	cmd.Env = append(os.Environ(),
 		envChildMode+"=1",
 		envChildDir+"="+dir,
