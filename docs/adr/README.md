@@ -11,11 +11,12 @@ These will be created as the corresponding milestones complete. **Numbers are re
 | 0001 | RESP2 subset and error-reply shape | After M1 lands | M1 |
 | 0002 | Single `sync.RWMutex` over the store | After M2 lands | M2 |
 | 0003 | AOF format and version byte | After M3 lands | M3 |
-| 0004 | TUI-over-RESP (no in-process coupling) | After M7 lands | M7 |
+| 0004 | TTL canonical PXAT encoding (AOF v2) | After M4 lands | M4 |
+| 0005 | TUI-over-RESP (no in-process coupling) | After M7 lands | M7 |
 
-*(Numbers track milestone order under the risk-first roadmap: AOF moves to M3, single-mutex stays at M2, TUI moves to M7. Renumbered from a previous draft where 0002 was AOF and 0003 was the mutex.)*
+*(Numbers track chronological landing order. TTL slotted in at 0004 when M4 closed — the version-byte bump and absolute-deadline persistence rule were both real architectural decisions worth recording; TUI bumped to 0005.)*
 
-**Budget: 4.** This breaks the "no more ADRs than toymq" parity rule in the source spec (toymq landed 3). Justification: adding a second binary that shares the wire protocol is itself an architecture decision worth recording. Documented here so the parity break is intentional, not accidental.
+**Budget: 5.** Already broke the "no more ADRs than toymq" parity rule (toymq landed 3) when 0004 was the TUI binary; now sitting at 5 with TTL slotted in. Justifications: (a) the TUI is a second binary sharing the wire protocol — a real architecture decision; (b) the AOF v2 format and the absolute-deadline rule for TTL persistence had design-time alternatives (relative PX, separate binary expiry field) that we want to record the rejection of. Both are intentional parity breaks.
 
 ## Format
 
