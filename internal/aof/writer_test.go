@@ -29,8 +29,8 @@ func TestOpen_CreatesHeaderOnEmptyDir(t *testing.T) {
 	if !bytes.Equal(got[:len(Magic)], Magic[:]) {
 		t.Fatalf("magic mismatch: got %x", got[:len(Magic)])
 	}
-	if got[HeaderLen-1] != Version1 {
-		t.Fatalf("version = %x, want %x", got[HeaderLen-1], Version1)
+	if got[HeaderLen-1] != CurrentVersion {
+		t.Fatalf("version = %x, want CurrentVersion %x", got[HeaderLen-1], CurrentVersion)
 	}
 }
 
