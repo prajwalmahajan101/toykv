@@ -7,7 +7,7 @@ SemVer 2.0.0.
 - **MINOR** — new command, new TUI feature, additive AOF field.
 - **PATCH** — bug fixes, perf, docs.
 
-Pre-v1.0.0: every milestone tag is `v0.M.0` (e.g. `v0.4.0` after M4 merges).
+Pre-v1.0.0: every milestone gets a lightweight milestone tag `mN` (e.g. `m4` after M4 merges). Only `v1.0.0` and beyond use SemVer version tags.
 
 ## Branching
 
