@@ -182,8 +182,8 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 
 | Milestone | Title | Status | PR | Tag |
 |---|---|---|---|---|
-| M0 | Skeleton | ✅ | [#1](https://github.com/prajwalmahajan101/toykv/pull/1) | `v0.0.0` |
-| M1 | RESP codec + PING/ECHO | ✅ | [#3](https://github.com/prajwalmahajan101/toykv/pull/3) | `v0.1.0` |
+| M0 | Skeleton | ✅ | [#1](https://github.com/prajwalmahajan101/toykv/pull/1) | `m0` |
+| M1 | RESP codec + PING/ECHO | ✅ | [#3](https://github.com/prajwalmahajan101/toykv/pull/3) | `m1` |
 | M2 | Store core + concurrent commands | ⬜ | — | — |
 | M3 | AOF persistence + crash injection | ⬜ | — | — |
 | M4 | TTL (on top of AOF v2) | ⬜ | — | — |
