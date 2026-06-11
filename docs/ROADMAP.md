@@ -186,7 +186,7 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 | M1 | RESP codec + PING/ECHO | ✅ | [#3](https://github.com/prajwalmahajan101/toykv/pull/3) | `m1` |
 | M2 | Store core + concurrent commands | ✅ | [#6](https://github.com/prajwalmahajan101/toykv/pull/6) | `m2` |
 | M3 | AOF persistence + crash injection | ✅ | [#8](https://github.com/prajwalmahajan101/toykv/pull/8) | `m3` |
-| M4 | TTL (on top of AOF v2) | ⬜ | — | — |
+| M4 | TTL (on top of AOF v2) | ✅ | [#10](https://github.com/prajwalmahajan101/toykv/pull/10) [#11](https://github.com/prajwalmahajan101/toykv/pull/11) [#12](https://github.com/prajwalmahajan101/toykv/pull/12) | `m4` |
 | M5 | Compaction (`BGREWRITEAOF`) | ⬜ | — | — |
 | M6 | CLI | ⬜ | — | — |
 | M7 | TUI | ⬜ | — | — |

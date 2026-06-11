@@ -214,6 +214,8 @@ func (sw *Sweeper) Run(ctx context.Context)
 
 Algorithm matches Redis's "expire random sample" — sample 20 keys per tick, evict expired, repeat if >25% were expired. Caps lock-hold time to a small bounded window per tick.
 
+**Lifecycle.** The sweeper is dormant during AOF replay — `server.New` does replay before constructing/launching the sweeper, and `server.Run` is what starts the goroutine. As a consequence, immediately after replay the store may contain entries whose `expireAt` is already past; lazy expiry catches them on first read, and the first sweeper tick (≤ 1s after Run starts) reaps the rest. `DBSIZE` during that brief window can include not-yet-swept expired keys — matches Redis semantics and is documented behaviour, not a bug.
+
 ### 3.4 Glob matcher
 
 `path.Match` is *close* but doesn't support `[charset]` ranges identically. v1 uses `path.Match` and documents the limitation; if a test demonstrates a Redis-compat gap, the matcher gets its own file (`store/glob.go`) and a unit test suite.
@@ -226,12 +228,17 @@ Algorithm matches Redis's "expire random sample" — sample 20 keys per tick, ev
 ┌──────────────────────────────────────────────┐
 │  header (8 bytes):                           │
 │    magic  = "TOYKVAOF"                       │
-│    version = 0x01            (1 byte, inside)│
+│    version = 0x02            (1 byte, inside)│
 │                                              │
 │  Actually: 7-byte magic + 1-byte version     │
-│    "TOYKV"  + 0x00 + 0x00 + 0x01             │
+│    "TOYKV"  + 0x00 + 0x00 + 0x02             │
 │                                              │
 │  Padded to 8 bytes for alignment.            │
+│                                              │
+│  Supported versions on read: {0x01, 0x02}.   │
+│  v1 files (pre-M4) replay cleanly on v2+.    │
+│  v2 introduces SET ... PXAT, PEXPIREAT,      │
+│  PERSIST records — see ADR-0004.             │
 └──────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────┐
 │  records (repeated):                         │
@@ -365,19 +372,23 @@ Idle conns are not closed in v1. (No `CLIENT TIMEOUT`.) Documented as a known li
 type handler func(s *Server, argv [][]byte) resp.Value
 
 var commands = map[string]handler{
-    "PING":   cmdPing,
-    "ECHO":   cmdEcho,
-    "GET":    cmdGet,
-    "SET":    cmdSet,
-    "DEL":    cmdDel,
-    "EXISTS": cmdExists,
-    "EXPIRE": cmdExpire,
-    "TTL":    cmdTTL,
-    "INCR":   cmdIncr,
-    "DECR":   cmdDecr,
-    "KEYS":   cmdKeys,
-    "FLUSHDB": cmdFlushDB,
-    "DBSIZE": cmdDBSize,
+    "PING":         cmdPing,
+    "ECHO":         cmdEcho,
+    "GET":          cmdGet,
+    "SET":          cmdSet,           // SET k v [NX|XX] [EX s | PX ms | EXAT s | PXAT ms]
+    "DEL":          cmdDel,
+    "EXISTS":       cmdExists,
+    "EXPIRE":       cmdExpire,
+    "PEXPIRE":      cmdPExpire,
+    "PEXPIREAT":    cmdPExpireAt,     // canonical TTL form for AOF v2 replay; exposed on wire too
+    "TTL":          cmdTTL,
+    "PTTL":         cmdPTTL,
+    "PERSIST":      cmdPersist,
+    "INCR":         cmdIncr,
+    "DECR":         cmdDecr,
+    "KEYS":         cmdKeys,
+    "FLUSHDB":      cmdFlushDB,
+    "DBSIZE":       cmdDBSize,
     "BGREWRITEAOF": cmdBGRewriteAOF,
 }
 
