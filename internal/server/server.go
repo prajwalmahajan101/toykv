@@ -17,25 +17,33 @@ import (
 
 // Config holds server configuration.
 type Config struct {
-	Addr        string          // TCP listen address, e.g. ":6390"
-	Log         *slog.Logger    // structured logger; nil ⇒ slog.Default()
-	Store       *store.Store    // backing key-value store; must be non-nil
-	Dir         string          // AOF data directory; "" disables persistence
-	FsyncPolicy aof.FsyncPolicy // ignored when Dir == ""
+	Addr        string               // TCP listen address, e.g. ":6390"
+	Log         *slog.Logger         // structured logger; nil ⇒ slog.Default()
+	Store       *store.Store         // backing key-value store; must be non-nil
+	Dir         string               // AOF data directory; "" disables persistence
+	FsyncPolicy aof.FsyncPolicy      // ignored when Dir == ""
+	NowFunc     func() time.Time     // optional; defaults to time.Now. Drives TTL command timestamps.
+	SweeperOpts store.SweeperOptions // optional; zero ⇒ store package defaults (1s / batch 20)
 }
 
 // Server is the TCP listener and command dispatcher.
 type Server struct {
-	cfg   Config
-	log   *slog.Logger
-	store *store.Store
-	aof   *aof.Writer // nil ⇒ persistence disabled
+	cfg     Config
+	log     *slog.Logger
+	store   *store.Store
+	aof     *aof.Writer // nil ⇒ persistence disabled
+	sweeper *store.Sweeper
+	nowFunc func() time.Time
 
 	mu       sync.Mutex
 	listener net.Listener
 	wg       sync.WaitGroup
 	closed   bool
 }
+
+// now returns the current time according to the configured clock. Used
+// by TTL commands so tests can inject a deterministic clock.
+func (s *Server) now() time.Time { return s.nowFunc() }
 
 // New constructs a Server. It does not open the listener; that happens
 // in Run.
@@ -49,7 +57,16 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	s := &Server{cfg: cfg, log: cfg.Log, store: cfg.Store}
+	if cfg.NowFunc == nil {
+		cfg.NowFunc = time.Now
+	}
+	s := &Server{
+		cfg:     cfg,
+		log:     cfg.Log,
+		store:   cfg.Store,
+		nowFunc: cfg.NowFunc,
+		sweeper: store.NewSweeper(cfg.Store, cfg.SweeperOpts),
+	}
 
 	if cfg.Dir != "" {
 		// Replay first so any AOF parse failure is surfaced before we
@@ -129,6 +146,11 @@ func (s *Server) Run(ctx context.Context) error {
 	s.listener = l
 	s.mu.Unlock()
 	s.log.Info("listening", "addr", l.Addr().String())
+
+	// The sweeper runs only while we're serving live traffic — never
+	// during replay (which happens in New, before Run). It exits when
+	// ctx cancels.
+	go s.sweeper.Run(ctx)
 
 	// Closing the listener on ctx cancel triggers the Accept loop to exit
 	// via net.ErrClosed.
