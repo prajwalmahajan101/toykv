@@ -1,8 +1,19 @@
 package store
 
-// entry is a single key's stored payload. M2 carries only the value;
-// M4 will add an expireAt time.Time when TTL lands. Keeping entry as a
-// struct (not a bare []byte) makes that diff trivial.
+import "time"
+
+// entry is a single key's stored payload.
+//
+// expireAt is the absolute deadline after which the entry is considered
+// expired. The zero value means "no expiry" — this is the v1 shape and
+// is preserved across all SET-without-TTL writes.
 type entry struct {
-	value []byte
+	value    []byte
+	expireAt time.Time
+}
+
+// expired reports whether the entry has an expiry set and now is at or
+// past it. A zero expireAt is never expired.
+func (e entry) expired(now time.Time) bool {
+	return !e.expireAt.IsZero() && !now.Before(e.expireAt)
 }
