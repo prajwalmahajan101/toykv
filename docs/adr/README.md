@@ -9,9 +9,11 @@ These will be created as the corresponding milestones complete. **Numbers are re
 | # | Title | When written | Milestone |
 |---|---|---|---|
 | 0001 | RESP2 subset and error-reply shape | After M1 lands | M1 |
-| 0002 | AOF format and version byte | After M4 lands | M4 |
-| 0003 | Single `sync.RWMutex` over the store | After M2 lands | M2 |
-| 0004 | TUI-over-RESP (no in-process coupling) | After M6 lands | M6 |
+| 0002 | Single `sync.RWMutex` over the store | After M2 lands | M2 |
+| 0003 | AOF format and version byte | After M3 lands | M3 |
+| 0004 | TUI-over-RESP (no in-process coupling) | After M7 lands | M7 |
+
+*(Numbers track milestone order under the risk-first roadmap: AOF moves to M3, single-mutex stays at M2, TUI moves to M7. Renumbered from a previous draft where 0002 was AOF and 0003 was the mutex.)*
 
 **Budget: 4.** This breaks the "no more ADRs than toymq" parity rule in the source spec (toymq landed 3). Justification: adding a second binary that shares the wire protocol is itself an architecture decision worth recording. Documented here so the parity break is intentional, not accidental.
 

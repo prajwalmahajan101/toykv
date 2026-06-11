@@ -3,11 +3,30 @@
 Milestone-ordered execution plan to v1.0.0. Each milestone ends at a tagged, demoable state. Branch off `main`; merge via PR; **no direct commits to `main`**.
 
 ```
-M0  Skeleton ──► M1  RESP echo ──► M2  In-mem KV ──► M3  TTL ──► M4  AOF ──►
+M0  Skeleton ──► M1  RESP echo ──► M2  Store core ──► M3  AOF + crash ──► M4  TTL ──►
 M5  Compaction ──► M6  CLI ──► M7  TUI ──► M8  Integration tests ──► M9  Bench + polish ──► v1.0.0
 ```
 
-CLI lands before TUI on purpose: it exercises the shared `internal/client` package end-to-end with the simplest possible UI surface, so the TUI starts on proven plumbing.
+## Why this order — bottom-up + risk-first
+
+Milestones are ordered so that the **highest-blast-radius pieces ship — and are crash-tested — earliest**. The principle: each milestone owns the risk tests for the surface it introduces; M8 becomes pure protocol/end-to-end smoke instead of a catch-all for crash injection that should have lived upstream.
+
+| Risk | Severity | Owned by |
+|---|---|---|
+| AOF replay correctness (silent acked-write loss on restart) | **Critical** | M3 — crash-injection tests live in M3, not M8 |
+| Per-command fsync ordering (ack-after-durability invariant) | High | M3 — same |
+| `BGREWRITEAOF` during concurrent writes | High | M5 — own rewrite-during-writes crash test |
+| TTL lock-upgrade race under sweeper pressure | Medium | M4 — own concurrent stress test |
+| Single-RWMutex contention | Medium (accepted) | M2 — own concurrent benchmark |
+| Wire-protocol edge cases | Low | M1 ✅ |
+| Server lifecycle drain | Low | M1 ✅ |
+| `redis-cli` compat across the matrix | Low | M8 (right place — only after each piece is internally proven) |
+
+Two ordering decisions deserve calling out:
+
+1. **AOF (M3) before TTL (M4).** AOF is the higher-blast-radius surface; TTL state must round-trip through AOF anyway. Building AOF first means a small, focused v1 format; adding TTL forces the version-byte plumbing on a real second use case rather than as theoretical scaffolding. (Previous order had TTL at M3 and AOF at M4.)
+
+2. **CLI (M6) before TUI (M7).** CLI exercises the shared `internal/client` package end-to-end with the simplest possible UI surface, so the TUI lands on proven plumbing.
 
 ---
 
@@ -27,33 +46,40 @@ CLI lands before TUI on purpose: it exercises the shared `internal/client` packa
 - Implement `PING`, `ECHO` only.
 - **Exit:** `redis-cli -p 6390 ping` → `PONG`.
 
-## M2 — In-memory store + core commands
+## M2 — Store core + concurrent commands
 **Branch:** `feat/store-core`
-- `internal/store.Store` with `sync.RWMutex`.
+- `internal/store.Store` with `sync.RWMutex`; strict `[]byte` values per LLD §3.
 - Commands: `GET`, `SET key value [NX|XX]`, `DEL`, `EXISTS`, `INCR`, `DECR`, `KEYS pattern`, `FLUSHDB`, `DBSIZE`.
 - Glob matching for `KEYS` (stdlib `filepath.Match`).
-- **Exit:** `redis-cli` round-trips every command above; unit tests on store + commands.
+- **Owned risk test:** concurrent stress — 100 goroutines × 1000 `INCR k` → final value exactly 100 000; race detector clean. Catches mutex-misuse bugs at the layer that introduces them, not at integration time.
+- **Exit:** `redis-cli` round-trips every command; unit + concurrent stress green.
 
-## M3 — TTL
-**Branch:** `feat/ttl`
-- Entry gains optional expiry timestamp.
-- `SET ... EX seconds`, `EXPIRE`, `TTL`.
-- Lazy check on every read/write.
-- 1 Hz background sweeper.
-- **Exit:** `EXPIRE k 1 && sleep 2 && GET k` → `(nil)`; sweeper evicts under no traffic.
-
-## M4 — AOF persistence
+## M3 — AOF persistence + crash injection
 **Branch:** `feat/aof`
-- Append-after-commit pipeline.
-- `appendfsync` policy: `always` | `everysec` | `no`.
-- Startup replay (server blocks accept until replay done).
-- **Exit:** crash-restart preserves every acknowledged write under `always`.
+*(Was M4. Moved up: AOF replay is the highest-blast-radius surface in v1, and TTL records depend on the AOF format anyway.)*
+- AOF v1 format (LLD §4.1): 8-byte header + RESP-encoded records of mutating commands. Version byte present from day one; v1 records cover only `SET k v` / `DEL k` (no TTL yet — that's M4).
+- `appendfsync` policy: `always` (default) | `everysec` | `no`.
+- Append-after-commit: handler completes store mutation, *then* AOF append, *then* fsync per policy, *then* reply.
+- Startup replay (server blocks `Accept` until replay completes).
+- **Owned risk test:** **crash injection.** Subprocess test — SIGKILLs server mid-write, restarts, verifies every acked SET is present under `appendfsync=always`. This is the durability contract, proven where the code lands.
+- **Exit:** crash-restart preserves every acknowledged write under `always`; replay rejects partial-tail with offset reported.
 
-## M5 — Compaction
+## M4 — TTL (on top of AOF v2)
+**Branch:** `feat/ttl`
+*(Was M3. Now lands after AOF so the format bump is the first real exercise of the version-byte design.)*
+- Entry gains optional expiry timestamp (LLD §3.1).
+- Commands: `SET ... EX seconds`, `SET ... PX ms`, `EXPIRE`, `TTL`, `PERSIST`.
+- Lazy check on every read/write; 1 Hz background sweeper using Redis's "expire random sample" algorithm (LLD §3.3).
+- **AOF format bumps to v2** — adds expiry encoding; replay accepts both v1 and v2 records (version-byte plumbing). This is the test of whether the version field actually works as designed.
+- **Owned risk test:** concurrent stress — N goroutines `SET k v EX 1` while the sweeper runs; verify no spurious `(nil)` returns to an unexpired key (the lock-upgrade race window in LLD §3.2).
+- **Exit:** `EXPIRE k 1 && sleep 2 && GET k` → `(nil)`; sweeper evicts under no traffic; v2 AOF replay round-trips TTLs across crash-restart.
+
+## M5 — Compaction (`BGREWRITEAOF`)
 **Branch:** `feat/bgrewriteaof`
-- `BGREWRITEAOF` command.
-- Snapshot to `.tmp`, atomic rename.
-- **Exit:** rewrite shrinks AOF after heavy churn; no data loss across rewrite + restart.
+- `BGREWRITEAOF` command (LLD §4.4).
+- Snapshot current state to `.aof.tmp`, capture live appends in a side buffer during the snapshot, append the side buffer, `fsync`, atomic `rename` over canonical path, `fsync` parent dir.
+- **Owned risk test:** crash during rewrite. SIGKILL mid-rewrite → restart → exactly one of `{old .aof, new .aof}` is present and replay yields a consistent state. No half-written file under the canonical name at any crash point.
+- **Exit:** rewrite shrinks AOF after heavy churn; no data loss across rewrite + restart under crash injection.
 
 ## M6 — CLI
 **Branch:** `feat/cli`
@@ -70,13 +96,14 @@ CLI lands before TUI on purpose: it exercises the shared `internal/client` packa
 - Raw-command prompt (`:`).
 - **Exit:** TUI performs every mutating command from PRD §5.1 against a running server.
 
-## M8 — Integration tests
+## M8 — Integration tests (end-to-end protocol compat)
 **Branch:** `feat/integration-tests` *(must land — don't repeat toymq's dangling-branch mistake)*
-- Spin server in test, exercise it via `go-redis/v9`.
-- Subprocess tests for both `toykv-cli` and `redis-cli` (`redis-cli` skipped if not on PATH).
-- Crash-injection test (SIGKILL during writes → restart → verify replay).
-- TUI smoke test via teatest.
-- **Exit:** CI green on all layers.
+*(Note: crash-injection and concurrent stress live in M3/M4/M5 — the milestones that own those risks. M8's job is end-to-end protocol compat, not unit-test catch-up.)*
+- Spin the shipped binary in a subprocess, exercise via `go-redis/v9`.
+- Subprocess tests for `toykv-cli` (one-shot, REPL, piped) and `redis-cli` (skipped if not on PATH; CI installs `redis-tools`).
+- TUI smoke test via `teatest`.
+- Optional: light cross-milestone crash test as defence-in-depth (the real crash matrix is already proven in M3/M5).
+- **Exit:** CI green across all layers; `redis-cli -p 6390 <cmd>` byte-compat for every command in PRD §5.1.
 
 ## M9 — Bench + polish + v1.0.0
 **Branch:** `feat/release-v1`
@@ -153,15 +180,21 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 
 ## Status tracking
 
-| Milestone | Status | PR | Tag |
-|---|---|---|---|
-| M0 | ✅ | [#1](https://github.com/prajwalmahajan101/toykv/pull/1) | `v0.0.0` |
-| M1 | ⬜ | — | — |
-| M2 | ⬜ | — | — |
-| M3 | ⬜ | — | — |
-| M4 | ⬜ | — | — |
-| M5 | ⬜ | — | — |
-| M6 | ⬜ | — | — |
-| M7 | ⬜ | — | — |
-| M8 | ⬜ | — | — |
-| M9 | ⬜ | — | v1.0.0 |
+| Milestone | Title | Status | PR | Tag |
+|---|---|---|---|---|
+| M0 | Skeleton | ✅ | [#1](https://github.com/prajwalmahajan101/toykv/pull/1) | `v0.0.0` |
+| M1 | RESP codec + PING/ECHO | ✅ | [#3](https://github.com/prajwalmahajan101/toykv/pull/3) | `v0.1.0` |
+| M2 | Store core + concurrent commands | ⬜ | — | — |
+| M3 | AOF persistence + crash injection | ⬜ | — | — |
+| M4 | TTL (on top of AOF v2) | ⬜ | — | — |
+| M5 | Compaction (`BGREWRITEAOF`) | ⬜ | — | — |
+| M6 | CLI | ⬜ | — | — |
+| M7 | TUI | ⬜ | — | — |
+| M8 | Integration tests (protocol compat) | ⬜ | — | — |
+| M9 | Bench + polish + v1.0.0 | ⬜ | — | `v1.0.0` |
+
+## Changes from the previous roadmap
+
+- **M3 ↔ M4 swap:** AOF now lands before TTL (was: TTL before AOF). Rationale: AOF is the highest-risk surface; TTL state needs to persist anyway; building AOF first lets the version-byte design get exercised on a real second use case when TTL adds expiry encoding.
+- **Risk tests moved upstream:** each milestone owns its own crash-injection / concurrent-stress test. M3 owns the durability crash test. M4 owns the TTL race test. M5 owns the rewrite-during-writes crash test. M8 becomes pure end-to-end protocol compat instead of the catch-all for everything risky.
+- **M2 explicitly owns a concurrent stress test** (was: just unit tests).
