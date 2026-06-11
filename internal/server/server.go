@@ -122,15 +122,15 @@ func isEMFILE(err error) bool {
 // at 1s, starting from 5ms.
 func nextBackoff(prev time.Duration) time.Duration {
 	const (
-		min = 5 * time.Millisecond
-		max = 1 * time.Second
+		minDelay = 5 * time.Millisecond
+		maxDelay = 1 * time.Second
 	)
 	if prev <= 0 {
-		return min
+		return minDelay
 	}
 	next := prev * 2
-	if next > max {
-		return max
+	if next > maxDelay {
+		return maxDelay
 	}
 	return next
 }
