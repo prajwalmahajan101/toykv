@@ -1,0 +1,55 @@
+package server
+
+import (
+	"bytes"
+	"fmt"
+
+	"github.com/prajwalmahajan101/toykv/internal/resp"
+)
+
+// handler executes one command and returns the reply frame.
+type handler struct {
+	// fn is the command implementation.
+	fn func(s *Server, argv [][]byte) resp.Value
+	// minArgs / maxArgs bound the inclusive argv length, *including* the
+	// command name itself. maxArgs = -1 means unbounded.
+	minArgs, maxArgs int
+}
+
+// commands is the dispatch table. M1 ships PING + ECHO; M2 onward grows
+// this map.
+var commands = map[string]handler{
+	"PING": {fn: cmdPing, minArgs: 1, maxArgs: 2},
+	"ECHO": {fn: cmdEcho, minArgs: 2, maxArgs: 2},
+}
+
+// dispatch routes argv to its handler, validating the command exists
+// and the arity is correct. Returns an error frame on lookup or arity
+// failure.
+func (s *Server) dispatch(argv [][]byte) resp.Value {
+	if len(argv) == 0 {
+		return resp.Error("ERR empty command")
+	}
+	name := upperASCII(argv[0])
+	h, ok := commands[name]
+	if !ok {
+		return resp.Error(fmt.Sprintf("ERR unknown command '%s'", argv[0]))
+	}
+	if len(argv) < h.minArgs || (h.maxArgs >= 0 && len(argv) > h.maxArgs) {
+		return resp.Error(fmt.Sprintf("ERR wrong number of arguments for '%s'", lowerASCII(argv[0])))
+	}
+	return h.fn(s, argv)
+}
+
+// upperASCII returns an upper-case copy of b. Command names are
+// case-insensitive in RESP and only valid ASCII.
+func upperASCII(b []byte) string {
+	out := bytes.ToUpper(b)
+	return string(out)
+}
+
+// lowerASCII is the mirror for error-reply formatting.
+func lowerASCII(b []byte) string {
+	out := bytes.ToLower(b)
+	return string(out)
+}
