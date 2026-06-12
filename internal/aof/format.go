@@ -7,6 +7,12 @@ import (
 	"io"
 )
 
+// TmpFilename is the in-progress filename used by the rewriter. It is
+// renamed onto Filename atomically when the rewrite completes (LLD §4.4)
+// and unlinked on Open if a previous run was killed mid-rewrite — a .tmp
+// file is therefore never canonical.
+const TmpFilename = "toykv.aof.tmp"
+
 // File format constants (LLD §4.1).
 const (
 	// HeaderLen is the total header size in bytes (7-byte magic + 1-byte
