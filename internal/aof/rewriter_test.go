@@ -150,7 +150,7 @@ func TestRewriter_ConcurrentAppendsSurviveSwap(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			argv := [][]byte{[]byte("SET"), []byte("live"), []byte{byte('0' + i)}}
+			argv := [][]byte{[]byte("SET"), []byte("live"), {byte('0' + i)}}
 			if err := w.Append(argv); err != nil {
 				t.Errorf("concurrent Append: %v", err)
 				return
