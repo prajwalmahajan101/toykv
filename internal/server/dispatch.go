@@ -37,6 +37,8 @@ var commands = map[string]handler{
 	"TTL":       {fn: cmdTTL, minArgs: 2, maxArgs: 2},
 	"PTTL":      {fn: cmdPTTL, minArgs: 2, maxArgs: 2},
 	"PERSIST":   {fn: cmdPersist, minArgs: 2, maxArgs: 2},
+
+	"BGREWRITEAOF": {fn: cmdBGRewriteAOF, minArgs: 1, maxArgs: 1},
 }
 
 // dispatch routes argv to its handler, validating the command exists

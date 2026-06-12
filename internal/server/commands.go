@@ -76,17 +76,26 @@ func cmdSet(s *Server, argv [][]byte) resp.Value {
 	if ok := s.store.Set(string(argv[1]), argv[2], opts); !ok {
 		return resp.NullBulk()
 	}
-	canonical := [][]byte{[]byte("SET"), argv[1], argv[2]}
-	if !opts.ExpireAt.IsZero() {
-		canonical = append(canonical,
-			[]byte("PXAT"),
-			[]byte(strconv.FormatInt(opts.ExpireAt.UnixMilli(), 10)),
-		)
-	}
+	canonical := renderCanonicalSet(argv[1], argv[2], opts.ExpireAt)
 	if err := s.appendIfLive(canonical); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.OK()
+}
+
+// renderCanonicalSet builds the canonical AOF record for a successful
+// SET: "SET k v" when expireAt is zero, "SET k v PXAT <unix-ms>"
+// otherwise. Shared with the BGREWRITEAOF snapshot path so the rewriter
+// emits byte-identical records to the live path (ADR-0004).
+func renderCanonicalSet(key, value []byte, expireAt time.Time) [][]byte {
+	out := [][]byte{[]byte("SET"), key, value}
+	if !expireAt.IsZero() {
+		out = append(out,
+			[]byte("PXAT"),
+			[]byte(strconv.FormatInt(expireAt.UnixMilli(), 10)),
+		)
+	}
+	return out
 }
 
 // parseSetOptions consumes the trailing tokens of a SET argv (after key
