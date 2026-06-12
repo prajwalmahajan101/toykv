@@ -39,6 +39,11 @@ type Server struct {
 	listener net.Listener
 	wg       sync.WaitGroup
 	closed   bool
+
+	// rewriteMu guards rewriteInFlight. Held only across the flag
+	// read-modify-write, never across the rewrite itself.
+	rewriteMu       sync.Mutex
+	rewriteInFlight bool
 }
 
 // now returns the current time according to the configured clock. Used
