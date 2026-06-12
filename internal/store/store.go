@@ -306,6 +306,36 @@ func (s *Store) incrBy(k string, delta int64) (int64, error) {
 	return n, nil
 }
 
+// SnapshotEntry is one live key's payload returned by Snapshot. Value
+// is a fresh copy owned by the caller. A zero ExpireAt means no expiry.
+type SnapshotEntry struct {
+	Key      string
+	Value    []byte
+	ExpireAt time.Time
+}
+
+// Snapshot returns every non-expired key in the store as a slice of
+// SnapshotEntry. It takes a write lock so expired entries can be evicted
+// inline — keeping the snapshot consistent with what Keys / Get would
+// see at the same instant. Used by BGREWRITEAOF (LLD §4.4) to materialise
+// live state for the rewriter.
+func (s *Store) Snapshot() []SnapshotEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.nowFunc()
+	out := make([]SnapshotEntry, 0, len(s.data))
+	for k, e := range s.data {
+		if e.expired(now) {
+			delete(s.data, k)
+			continue
+		}
+		cp := make([]byte, len(e.value))
+		copy(cp, e.value)
+		out = append(out, SnapshotEntry{Key: k, Value: cp, ExpireAt: e.expireAt})
+	}
+	return out
+}
+
 // FlushDB removes every key.
 func (s *Store) FlushDB() {
 	s.mu.Lock()
