@@ -1,4 +1,8 @@
-package main
+// Package cmdparse tokenises a shell-like command line into argv.
+// Unquoted whitespace separates tokens; "…" supports \\ \" \n \t \r
+// \0 \a \b \f \v escapes; '…' is literal (matching redis-cli). Shared
+// by toykv-cli (REPL/piped/one-shot) and toykv-tui (raw-command prompt).
+package cmdparse
 
 import (
 	"fmt"
@@ -6,11 +10,9 @@ import (
 	"unicode"
 )
 
-// tokenise splits a shell-like input line into argv. Unquoted whitespace
-// separates tokens; "…" supports \\ \" \n \t \r \0 \a \b \f \v escapes;
-// '…' is literal (no escapes, matching redis-cli). An unterminated
+// Tokenise splits a shell-like input line into argv. An unterminated
 // quote returns an error.
-func tokenise(line string) ([]string, error) {
+func Tokenise(line string) ([]string, error) {
 	var (
 		out  []string
 		cur  strings.Builder
@@ -44,7 +46,7 @@ func tokenise(line string) ([]string, error) {
 			if i >= len(runes) {
 				return nil, fmt.Errorf("unterminated double-quoted string")
 			}
-			i++ // closing "
+			i++
 		case c == '\'':
 			open = true
 			i++
@@ -68,9 +70,6 @@ func tokenise(line string) ([]string, error) {
 	return out, nil
 }
 
-// decodeEscape returns the rune for a backslash-escape inside double
-// quotes and the number of source runes consumed past the backslash
-// (always 1 for the simple forms supported here).
 func decodeEscape(c rune) (rune, int) {
 	switch c {
 	case 'n':

@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/prajwalmahajan101/toykv/internal/client"
+	"github.com/prajwalmahajan101/toykv/internal/cmdparse"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
+	"github.com/prajwalmahajan101/toykv/internal/respfmt"
 )
 
 const usage = `toykv-cli — RESP2 client for toykv
@@ -71,7 +73,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	defer cli.Close()
 
-	pr := &printer{out: stdout, err: stderr, raw: *raw}
+	pr := &respfmt.Printer{Out: stdout, Err: stderr, Raw: *raw}
 
 	// One-shot mode.
 	if fs.NArg() > 0 {
@@ -86,13 +88,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // doOneShot sends a single command and exits with the appropriate code.
-func doOneShot(cli *client.Client, pr *printer, argv []string) int {
+func doOneShot(cli *client.Client, pr *respfmt.Printer, argv []string) int {
 	v, err := cli.Do(argv...)
 	if err != nil {
-		fmt.Fprintf(pr.err, "toykv-cli: %v\n", err)
+		fmt.Fprintf(pr.Err, "toykv-cli: %v\n", err)
 		return exitFatal
 	}
-	pr.print(v)
+	pr.Print(v)
 	if v.Kind == resp.KindError {
 		return exitErr
 	}
@@ -100,7 +102,7 @@ func doOneShot(cli *client.Client, pr *printer, argv []string) int {
 }
 
 // doREPL drives an interactive prompt until EOF / quit / exit.
-func doREPL(cli *client.Client, pr *printer, stdin io.Reader, stdout io.Writer, addr string) int {
+func doREPL(cli *client.Client, pr *respfmt.Printer, stdin io.Reader, stdout io.Writer, addr string) int {
 	br := bufio.NewReader(stdin)
 	prompt := fmt.Sprintf("toykv:%s> ", addr)
 	for {
@@ -114,7 +116,7 @@ func doREPL(cli *client.Client, pr *printer, stdin io.Reader, stdout io.Writer, 
 				}
 				// Fall through to dispatch the final line without newline.
 			} else {
-				fmt.Fprintf(pr.err, "toykv-cli: read: %v\n", err)
+				fmt.Fprintf(pr.Err, "toykv-cli: read: %v\n", err)
 				return exitFatal
 			}
 		}
@@ -139,7 +141,7 @@ func doREPL(cli *client.Client, pr *printer, stdin io.Reader, stdout io.Writer, 
 }
 
 // doPiped reads commands one per line from stdin until EOF.
-func doPiped(cli *client.Client, pr *printer, stdin io.Reader) int {
+func doPiped(cli *client.Client, pr *respfmt.Printer, stdin io.Reader) int {
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	last := exitOK
@@ -156,7 +158,7 @@ func doPiped(cli *client.Client, pr *printer, stdin io.Reader) int {
 		last = rc
 	}
 	if err := sc.Err(); err != nil {
-		fmt.Fprintf(pr.err, "toykv-cli: read: %v\n", err)
+		fmt.Fprintf(pr.Err, "toykv-cli: read: %v\n", err)
 		return exitFatal
 	}
 	return last
@@ -165,10 +167,10 @@ func doPiped(cli *client.Client, pr *printer, stdin io.Reader) int {
 // dispatchLine tokenises a line and sends it; returns the reply's exit
 // code. Parse errors do not kill REPL/piped sessions (they print and
 // return exitErr); transport errors return exitFatal.
-func dispatchLine(cli *client.Client, pr *printer, line string) int {
-	argv, err := tokenise(line)
+func dispatchLine(cli *client.Client, pr *respfmt.Printer, line string) int {
+	argv, err := cmdparse.Tokenise(line)
 	if err != nil {
-		fmt.Fprintf(pr.err, "(error) parse: %v\n", err)
+		fmt.Fprintf(pr.Err, "(error) parse: %v\n", err)
 		return exitErr
 	}
 	if len(argv) == 0 {
@@ -176,10 +178,10 @@ func dispatchLine(cli *client.Client, pr *printer, line string) int {
 	}
 	v, err := cli.Do(argv...)
 	if err != nil {
-		fmt.Fprintf(pr.err, "toykv-cli: %v\n", err)
+		fmt.Fprintf(pr.Err, "toykv-cli: %v\n", err)
 		return exitFatal
 	}
-	pr.print(v)
+	pr.Print(v)
 	if v.Kind == resp.KindError {
 		return exitErr
 	}
