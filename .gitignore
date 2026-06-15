@@ -25,6 +25,3 @@ Thumbs.db
 # Tooling state (not part of source)
 .remember/
 .claude/
-
-# Implementation journal — raw notes, blog material; never committed
-docs/journal/
