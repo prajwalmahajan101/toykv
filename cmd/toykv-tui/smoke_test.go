@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/prajwalmahajan101/toykv/internal/client"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
@@ -16,43 +18,6 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/store"
 	"github.com/prajwalmahajan101/toykv/internal/tui"
 )
-
-// drive feeds msg into the model and returns the resulting Model plus
-// the tea.Cmd (if any). The caller decides whether to run the Cmd —
-// the model's own Init/refresh path schedules a tea.Tick that would
-// block this single-threaded helper, so the test only invokes Cmds it
-// expects to terminate (network round-trips).
-func drive(t *testing.T, m tui.Model, msg tea.Msg) (tui.Model, tea.Cmd) {
-	t.Helper()
-	next, cmd := m.Update(msg)
-	return next.(tui.Model), cmd
-}
-
-// runReply executes a Cmd known to produce a replyMsg or refreshMsg
-// and pumps that single message back into the model. Stops after one
-// round so the test never hits a tickCmd.
-func runReply(t *testing.T, m tui.Model, cmd tea.Cmd) tui.Model {
-	t.Helper()
-	if cmd == nil {
-		return m
-	}
-	out := cmd()
-	if out == nil {
-		return m
-	}
-	next, _ := m.Update(out)
-	return next.(tui.Model)
-}
-
-func keyMsg(s string) tea.KeyMsg {
-	switch s {
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
-}
 
 func startServer(t *testing.T) (string, func()) {
 	t.Helper()
@@ -83,7 +48,7 @@ func startServer(t *testing.T) (string, func()) {
 	for time.Now().Before(deadline) {
 		c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -97,35 +62,57 @@ func startServer(t *testing.T) (string, func()) {
 	}
 }
 
-// TestTUI_RoundtripSET drives the model end-to-end: open NewKV mode,
-// type "foo bar", submit, then verify the server side has the value.
-// This is M7's exit gate — a mutating command from PRD §5.1 issued via
-// PRD §5.5 keybindings against a running server.
-func TestTUI_RoundtripSET(t *testing.T) {
-	addr, stop := startServer(t)
-	defer stop()
-
+// newTeaModel builds a TUI model wired to addr. Centralised so each test
+// stays focused on assertions rather than setup.
+func newTeaModel(t *testing.T, addr string) tui.Model {
+	t.Helper()
 	c, err := client.DialTimeout(addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
+	return tui.NewModel(c, addr, 2*time.Second, "")
+}
 
-	m := tui.NewModel(c, addr, 2*time.Second, "")
-	m, _ = drive(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
-	m, _ = drive(t, m, keyMsg("n"))
-	for _, r := range "foo bar" {
-		m, _ = drive(t, m, keyMsg(string(r)))
+// containsAll reports whether haystack contains every needle. Used inside
+// teatest.WaitFor predicates to assert on rendered output fragments.
+func containsAll(haystack []byte, needles ...string) bool {
+	for _, n := range needles {
+		if !bytes.Contains(haystack, []byte(n)) {
+			return false
+		}
 	}
-	_, cmd := drive(t, m, keyMsg("enter"))
-	_ = runReply(t, m, cmd) // executes SET, pumps replyMsg back
+	return true
+}
 
-	// Verify via a second client (the TUI's client is busy serialising).
+// TestTUI_TeatestSmoke_SET drives the TUI model through teatest's
+// virtual terminal: open NewKV mode (n), type "foo bar", submit, then
+// verify the server side actually stored the pair. Asserting on rendered
+// output (via teatest.WaitFor) gives a smoke check that the model both
+// dispatched the command and reflected the reply in the UI.
+func TestTUI_TeatestSmoke_SET(t *testing.T) {
+	addr, stop := startServer(t)
+	defer stop()
+
+	m := newTeaModel(t, addr)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 20))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	tm.Type("foo bar")
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Wait until the value pane shows the reply ("OK") OR the key list
+	// picks up the new "foo" entry — whichever lands first.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return containsAll(out, "foo") || containsAll(out, "OK")
+	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(25*time.Millisecond))
+
+	// Server-side ground truth: GET via a second client.
 	verify, err := client.DialTimeout(addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("verify dial: %v", err)
 	}
-	defer verify.Close()
+	defer func() { _ = verify.Close() }()
 	v, err := verify.Do("GET", "foo")
 	if err != nil {
 		t.Fatalf("verify GET: %v", err)
@@ -133,49 +120,65 @@ func TestTUI_RoundtripSET(t *testing.T) {
 	if v.Kind != resp.KindBulkString || v.IsNull || string(v.Bytes) != "bar" {
 		t.Fatalf("verify GET = %+v, want bulk=\"bar\"", v)
 	}
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }
 
-// TestTUI_RoundtripINCR exercises the i keybinding against a populated
-// key.
-func TestTUI_RoundtripINCR(t *testing.T) {
+// TestTUI_TeatestSmoke_INCR seeds n=10, focuses it after a refresh, sends
+// `i`, and verifies the server-side counter advanced to 11.
+func TestTUI_TeatestSmoke_INCR(t *testing.T) {
 	addr, stop := startServer(t)
 	defer stop()
 
-	c, err := client.DialTimeout(addr, 2*time.Second)
+	seed, err := client.DialTimeout(addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer c.Close()
-	if _, err := c.Do("SET", "n", "10"); err != nil {
+	if _, err := seed.Do("SET", "n", "10"); err != nil {
 		t.Fatalf("seed SET: %v", err)
 	}
+	_ = seed.Close()
 
-	m := tui.NewModel(c, addr, 2*time.Second, "")
-	m, _ = drive(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
-	// Force a refresh to populate keys + focus, then run the refresh cmd.
-	m, cmd := drive(t, m, keyMsg("r"))
-	m = runReply(t, m, cmd)
-	if m.FocusedKey() != "n" {
-		t.Fatalf("expected focused=n after refresh, got %q", m.FocusedKey())
-	}
-	m, cmd = drive(t, m, keyMsg("i"))
-	_ = runReply(t, m, cmd)
+	m := newTeaModel(t, addr)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 20))
 
-	v, err := c.Do("GET", "n")
+	// `r` forces a refresh so the key list populates and focus lands on n.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return containsAll(out, "n")
+	}, teatest.WithDuration(2*time.Second))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	// Poll the server for the increment to land. teatest.WaitFor would also
+	// work but the rendered TUI doesn't necessarily echo the integer reply
+	// inline — server-side state is the durable signal.
+	c, err := client.DialTimeout(addr, 2*time.Second)
 	if err != nil {
-		t.Fatalf("verify GET: %v", err)
+		t.Fatalf("verify dial: %v", err)
 	}
-	if string(v.Bytes) != "11" {
-		t.Fatalf("INCR did not roundtrip: GET n = %q", string(v.Bytes))
+	defer func() { _ = c.Close() }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		v, err := c.Do("GET", "n")
+		if err == nil && v.Kind == resp.KindBulkString && string(v.Bytes) == "11" {
+			tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+			tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
+	t.Fatal("INCR never landed on the server within 2s")
 }
 
 // TestRun_BadAddrExit2 verifies the binary's run() returns the fatal
-// exit code when the server is unreachable.
+// exit code when the server is unreachable. This is a pure CLI test, not
+// a TUI one — kept here because run() is defined in this package.
 func TestRun_BadAddrExit2(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := l.Addr().String()
-	l.Close()
+	_ = l.Close()
 	code := run([]string{"-addr", addr, "-timeout", "200ms"}, io.Discard, io.Discard)
 	if code != exitFatal {
 		t.Fatalf("want exit %d, got %d", exitFatal, code)
