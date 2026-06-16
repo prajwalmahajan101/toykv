@@ -188,9 +188,9 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 | M3 | AOF persistence + crash injection | ✅ | [#8](https://github.com/prajwalmahajan101/toykv/pull/8) | `m3` |
 | M4 | TTL (on top of AOF v2) | ✅ | [#10](https://github.com/prajwalmahajan101/toykv/pull/10) [#11](https://github.com/prajwalmahajan101/toykv/pull/11) [#12](https://github.com/prajwalmahajan101/toykv/pull/12) | `m4` |
 | M5 | Compaction (`BGREWRITEAOF`) | ✅ | [#13](https://github.com/prajwalmahajan101/toykv/pull/13) [#14](https://github.com/prajwalmahajan101/toykv/pull/14) [#15](https://github.com/prajwalmahajan101/toykv/pull/15) | `m5` |
-| M6 | CLI | ⬜ | — | — |
-| M7 | TUI | ⬜ | — | — |
-| M8 | Integration tests (protocol compat) | ⬜ | — | — |
+| M6 | CLI | ✅ | [#15](https://github.com/prajwalmahajan101/toykv/pull/15) [#16](https://github.com/prajwalmahajan101/toykv/pull/16) | `m6` |
+| M7 | TUI | ✅ | [#17](https://github.com/prajwalmahajan101/toykv/pull/17) [#19](https://github.com/prajwalmahajan101/toykv/pull/19) | `m7` |
+| M8 | Integration tests (protocol compat) | ✅ | _see `feat/integration-tests` PR series_ | `m8` |
 | M9 | Bench + polish + v1.0.0 | ⬜ | — | `v1.0.0` |
 
 ## Changes from the previous roadmap

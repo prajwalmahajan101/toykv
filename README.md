@@ -6,7 +6,7 @@
 
 Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (append, replay, durable), toykv exercises the **map** pattern (in-memory, mutable, expirable). Two foundational network-server primitives, one Go module each.
 
-**Status:** M0–M7 shipped (7 of 10). M8 (integration tests) and M9 (bench + v1.0.0 release) remain. See [ROADMAP](./docs/ROADMAP.md).
+**Status:** M0–M8 shipped (8 of 10). M9 (bench + v1.0.0 release) remains. See [ROADMAP](./docs/ROADMAP.md).
 
 ## What it is
 
@@ -72,11 +72,25 @@ internal/
   cmdparse/     # shell-like tokeniser (CLI + TUI raw prompt)
   respfmt/      # RESP-value renderer (CLI pretty/raw + TUI value pane)
   tui/          # Bubble Tea Model/Update/View
+test/
+  e2e/          # subprocess harness + go-redis/redis-cli/teatest protocol-compat suite (M8)
 docs/
   PRD.md HLD.md LLD.md ROADMAP.md TESTING.md
   adr/          # architectural decision records
   journal/      # per-PR milestone journal
 ```
+
+## Testing
+
+Three layers, each runnable independently:
+
+```sh
+go test ./...                 # unit + in-process integration + crash injection
+go test ./test/e2e/...        # subprocess harness: shipped binaries + go-redis + redis-cli
+go test ./cmd/toykv-tui/...   # teatest-driven TUI smoke against an in-process server
+```
+
+The e2e suite builds `cmd/toykv` and `cmd/toykv-cli` from source on each `go test` invocation and drives them as real subprocesses — the same code path `make build` ships. The `redis-cli` byte-compat sweep skips automatically when `redis-cli` isn't on `PATH`; CI installs `redis-tools` on Linux runners to exercise it.
 
 ## Documentation
 
@@ -89,7 +103,7 @@ docs/
 
 ## Dependencies
 
-Server and CLI binaries: stdlib only. TUI binary adds `github.com/charmbracelet/{bubbletea,lipgloss,bubbles}` and their transitive surface — see [ADR-0009](./docs/adr/0009-tui-bubble-tea-and-injectable-doer.md) for the rationale.
+Server and CLI binaries: stdlib only. TUI binary adds `github.com/charmbracelet/{bubbletea,lipgloss,bubbles}` and their transitive surface — see [ADR-0009](./docs/adr/0009-tui-bubble-tea-and-injectable-doer.md) for the rationale. Test-only deps (not in any shipped binary): `github.com/redis/go-redis/v9` and `github.com/charmbracelet/x/exp/teatest`, both pulled in for M8 protocol-compat tests.
 
 ## License
 
