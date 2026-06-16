@@ -1,0 +1,271 @@
+// Package e2e drives the shipped toykv binaries (server, cli) as subprocesses
+// for end-to-end protocol-compat tests. The unit suites (internal/...) exercise
+// in-process code paths; this suite proves the actual artifacts users run.
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+var sigTerm = syscall.SIGTERM
+
+// Binaries holds absolute paths to the e2e-built server and cli binaries.
+// Populated by BuildBinaries from TestMain so every test reuses the same build.
+type Binaries struct {
+	Server string
+	CLI    string
+}
+
+var builtBinaries Binaries
+
+// BuildBinaries compiles cmd/toykv and cmd/toykv-cli into a temp dir and
+// returns their paths. Intended to be called once from TestMain.
+func BuildBinaries() (Binaries, func(), error) {
+	tmp, err := os.MkdirTemp("", "toykv-e2e-bin-*")
+	if err != nil {
+		return Binaries{}, func() {}, fmt.Errorf("mkdtemp: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		cleanup()
+		return Binaries{}, func() {}, err
+	}
+
+	for _, b := range []struct {
+		pkg string
+		out *string
+	}{
+		{pkg: "./cmd/toykv", out: new(string)},
+		{pkg: "./cmd/toykv-cli", out: new(string)},
+	} {
+		name := filepath.Base(b.pkg) + suffix
+		path := filepath.Join(tmp, name)
+		cmd := exec.Command("go", "build", "-o", path, b.pkg)
+		cmd.Dir = repoRoot
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			cleanup()
+			return Binaries{}, func() {}, fmt.Errorf("go build %s: %w\n%s", b.pkg, err, stderr.String())
+		}
+		*b.out = path
+	}
+
+	builtBinaries = Binaries{
+		Server: filepath.Join(tmp, "toykv"+suffix),
+		CLI:    filepath.Join(tmp, "toykv-cli"+suffix),
+	}
+	return builtBinaries, cleanup, nil
+}
+
+// findRepoRoot walks up from the current file location to the repo root
+// (identified by go.mod). Works regardless of where `go test` is invoked from.
+func findRepoRoot() (string, error) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", errors.New("runtime.Caller failed")
+	}
+	dir := filepath.Dir(thisFile)
+	for i := 0; i < 10; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", errors.New("go.mod not found above harness.go")
+}
+
+// ServerOpts configures a subprocess server launched by StartServer.
+type ServerOpts struct {
+	// Dir is the AOF directory. If empty, a t.TempDir is used.
+	Dir string
+	// AppendFsync is the -appendfsync flag. Defaults to "no" for test speed.
+	AppendFsync string
+	// ExtraArgs are appended to the server command line.
+	ExtraArgs []string
+}
+
+// Server is a running toykv subprocess.
+type Server struct {
+	Addr string
+	Dir  string
+
+	cmd    *exec.Cmd
+	stderr bytes.Buffer
+	t      *testing.T
+	once   sync.Once
+}
+
+// StartServer launches the built server binary on a free port and waits until
+// it accepts PING. The server is automatically stopped at test cleanup.
+func StartServer(t *testing.T, opts ServerOpts) *Server {
+	t.Helper()
+	if builtBinaries.Server == "" {
+		t.Fatalf("e2e: server binary not built; call BuildBinaries in TestMain")
+	}
+
+	port := freePort(t)
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+
+	dir := opts.Dir
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	fsync := opts.AppendFsync
+	if fsync == "" {
+		fsync = "no"
+	}
+
+	args := []string{"-addr", addr, "-dir", dir, "-appendfsync", fsync, "-log-level", "warn"}
+	args = append(args, opts.ExtraArgs...)
+
+	cmd := exec.Command(builtBinaries.Server, args...)
+	s := &Server{Addr: addr, Dir: dir, cmd: cmd, t: t}
+	cmd.Stderr = &s.stderr
+	cmd.Stdout = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	if err := waitReady(addr, 3*time.Second); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("server not ready on %s: %v\nstderr:\n%s", addr, err, s.stderr.String())
+	}
+
+	t.Cleanup(s.Stop)
+	return s
+}
+
+// Stop sends SIGTERM and waits up to 2s. SIGKILL on timeout.
+func (s *Server) Stop() {
+	s.once.Do(func() {
+		if s.cmd == nil || s.cmd.Process == nil {
+			return
+		}
+		_ = s.cmd.Process.Signal(sigTerm)
+		done := make(chan struct{})
+		go func() { _ = s.cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			_ = s.cmd.Process.Kill()
+			<-done
+		}
+	})
+}
+
+// Stderr returns the server's accumulated stderr (handy on failure).
+func (s *Server) Stderr() string { return s.stderr.String() }
+
+// freePort probes a free TCP port by binding 127.0.0.1:0 and closing.
+// There is a tiny race window before the subprocess re-binds, but in practice
+// this is reliable for tests on a quiet developer/CI machine.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe free port: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// waitReady dials addr and sends an inline PING until +PONG arrives or deadline.
+func waitReady(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+			_ = conn.Close()
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		buf := make([]byte, 16)
+		n, err := conn.Read(buf)
+		_ = conn.Close()
+		if err == nil && n >= 5 && bytes.HasPrefix(buf[:n], []byte("+PONG")) {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(25 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timed out waiting for +PONG")
+	}
+	return lastErr
+}
+
+// CLIResult is the captured outcome of one toykv-cli subprocess run.
+type CLIResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// RunCLI execs the built toykv-cli with args and stdin, capturing stdout/stderr
+// and the exit code. timeout caps total wall time.
+func RunCLI(t *testing.T, addr string, stdin string, args ...string) CLIResult {
+	t.Helper()
+	if builtBinaries.CLI == "" {
+		t.Fatalf("e2e: cli binary not built; call BuildBinaries in TestMain")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	full := append([]string{"-addr", addr}, args...)
+	cmd := exec.CommandContext(ctx, builtBinaries.CLI, full...)
+	if stdin != "" {
+		cmd.Stdin = bytes.NewBufferString(stdin)
+	}
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("run cli: %v\nstderr:\n%s", err, errb.String())
+		}
+	}
+	return CLIResult{Stdout: out.String(), Stderr: errb.String(), ExitCode: code}
+}
