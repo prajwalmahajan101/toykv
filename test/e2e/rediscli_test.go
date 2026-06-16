@@ -94,16 +94,17 @@ func TestRedisCLI_ByteCompat(t *testing.T) {
 	}
 }
 
-// TestRedisCLI_GetNil verifies that redis-cli prints a nil bulk reply
-// as the literal string "(nil)" — the convention every redis-cli version
-// has used since 1.x.
+// TestRedisCLI_GetNil verifies that redis-cli's non-interactive output for
+// a nil bulk reply is an empty line — the "(nil)" formatting only appears
+// in interactive mode. The script-friendly empty output is what callers
+// (shell pipelines, CI) actually rely on.
 func TestRedisCLI_GetNil(t *testing.T) {
 	if _, err := exec.LookPath("redis-cli"); err != nil {
 		t.Skip("redis-cli not on PATH")
 	}
 	s := StartServer(t, ServerOpts{})
 	got := runRedisCLI(t, s.Addr, "GET", "missing")
-	if got != "(nil)" {
-		t.Fatalf("GET missing: want %q got %q", "(nil)", got)
+	if got != "" {
+		t.Fatalf("GET missing: want empty (non-interactive nil), got %q", got)
 	}
 }
