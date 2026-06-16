@@ -41,10 +41,15 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
+      - name: install redis-tools (ubuntu only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends redis-tools
       - name: vet
         run: go vet ./...
-      - name: test
-        run: go test -race -timeout 5m ./...
+      - name: unit tests
+        run: go test -race -timeout 5m $(go list ./... | grep -v /test/e2e)
+      - name: e2e tests
+        run: go test -race -timeout 10m ./test/e2e/...
 
   build:
     name: build
