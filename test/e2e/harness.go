@@ -144,6 +144,7 @@ func StartServer(t *testing.T, opts ServerOpts) *Server {
 	args := []string{"-addr", addr, "-dir", dir, "-appendfsync", fsync, "-log-level", "warn"}
 	args = append(args, opts.ExtraArgs...)
 
+	//nolint:gosec // G204: builtBinaries.Server is a path we built ourselves in TestMain.
 	cmd := exec.Command(builtBinaries.Server, args...)
 	s := &Server{Addr: addr, Dir: dir, cmd: cmd, t: t}
 	cmd.Stderr = &s.stderr
@@ -249,6 +250,7 @@ func RunCLI(t *testing.T, addr string, stdin string, args ...string) CLIResult {
 	defer cancel()
 
 	full := append([]string{"-addr", addr}, args...)
+	//nolint:gosec // G204: builtBinaries.CLI is a path we built ourselves in TestMain.
 	cmd := exec.CommandContext(ctx, builtBinaries.CLI, full...)
 	if stdin != "" {
 		cmd.Stdin = bytes.NewBufferString(stdin)
