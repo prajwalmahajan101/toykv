@@ -1,0 +1,111 @@
+version: 2
+
+project_name: toykv
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: toykv
+    main: ./cmd/toykv
+    binary: toykv
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+  - id: toykv-cli
+    main: ./cmd/toykv-cli
+    binary: toykv-cli
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+  - id: toykv-tui
+    main: ./cmd/toykv-tui
+    binary: toykv-tui
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    ids: [toykv, toykv-cli, toykv-tui]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - docs/PRD.md
+      - docs/ROADMAP.md
+      - docs/SECURITY.md
+
+checksum:
+  name_template: "SHA256SUMS"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-SNAPSHOT-{{.ShortCommit}}"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+      - "^ci:"
+      - "Merge pull request"
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: Refactors
+      regexp: '^refactor(\(.+\))?:'
+      order: 2
+
+release:
+  github:
+    owner: prajwalmahajan101
+    name: toykv
+  draft: false
+  prerelease: auto
+  name_template: "toykv {{ .Tag }}"
+  header: |
+    toykv {{ .Tag }} — single-node in-memory KV store (RESP2 + AOF + TTL).
+
+    Three binaries per archive: `toykv` (server), `toykv-cli`, `toykv-tui`.
+    Verify with the published `SHA256SUMS` file. Hand-curated highlights live
+    in `docs/release-notes/{{ .Tag }}.md` in the repo.
+  footer: |
+    ---
+    Built by [goreleaser](https://goreleaser.com); see [`.goreleaser.yaml`]({{ .ReleaseURL }}).
