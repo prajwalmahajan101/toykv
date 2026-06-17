@@ -1,6 +1,7 @@
 # Build artefacts
 /bin/
 /data/
+/dist/
 
 # AOF runtime files
 *.aof
