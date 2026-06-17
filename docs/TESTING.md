@@ -81,6 +81,24 @@ Bubble Tea's `teatest` snapshots. Pin the UI for a handful of scripted interacti
 
 Lives in `internal/tui/*_test.go`. Run as part of normal `go test ./...`.
 
+## Crash matrix — who proves what
+
+Crash and concurrent-stress tests are owned by the milestone that introduces the risk, not by a single catch-all suite. Each row below is one fault surface; each one already has a test file. The chaos suite from M9 composes the faults — it's the only layer that combines crashes, pauses, and rewrites in the same run.
+
+| Surface | Risk | Owning milestone | Test file | Invariant proven |
+|---|---|---|---|---|
+| AOF append + replay | acked SET / DEL lost on SIGKILL under `fsync=always` | M3 | `internal/server/aof_crash_test.go` | Every record acknowledged before the kill replays on restart |
+| Partial-tail handling | crash mid-record corrupts replay state | M3 | `internal/aof/replayer_test.go` | Replay rejects a torn record; offset reported, server refuses to serve until truncated |
+| TTL lock-upgrade race | sweeper drops an unexpired key under load | M4 | `internal/store/sweeper_test.go` | N writers × 1 Hz sweeper → zero spurious `(nil)` for unexpired keys |
+| TTL crash round-trip | TTL records get lost across SIGKILL + restart | M4 | `internal/server/aof_ttl_crash_test.go` | v2 replay accepts v1 records; expiry decodes round-trip across restart |
+| `BGREWRITEAOF` during writes | rewrite races a concurrent SET; AOF tail loses data | M5 | `internal/aof/rewriter_test.go` | Side-buffer captures all live appends; rewrite + tail merges with no record loss |
+| Crash during rewrite | partial `.aof.tmp` left, no canonical AOF survives | M5 | `internal/server/aof_rewrite_crash_test.go` | Exactly one of `{old .aof, new .aof}` is present after restart; replay is consistent |
+| Shipped binary protocol drift | `redis-cli` / `go-redis` regression invisible to in-process tests | M8 | `test/e2e/protocol_*_test.go` | Byte-compat for every command in PRD §5.1 |
+| `BGREWRITEAOF` + restart round-trip | restart after compaction loses data | M8 | `test/e2e/rewrite_restart_test.go` | Mixed-workload state survives `BGREWRITEAOF` followed by restart |
+| **Composed faults (kill + pause + rewrite + writes)** | failure modes that only manifest when multiple faults overlap | M9 | `test/chaos/invariants_test.go` | Acked-SET survival, monotonic INCR, no panic / torn-tail fatal across a soak |
+
+The chaos suite is the only layer that *composes* faults — every other test owns one fault. That's deliberate: composed-fault tests are slow and flaky if used as the primary durability proof, but invaluable as a release-confidence soak after each component is independently proven.
+
 ## Layer 6 — Benchmarks
 
 Not pass/fail, but tracked.
