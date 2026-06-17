@@ -14,10 +14,13 @@ These will be created as the corresponding milestones complete. **Numbers are re
 | 0004 | TTL canonical PXAT encoding (AOF v2) | After M4 lands | M4 |
 | 0005 | BGREWRITEAOF — dual-write side buffer + atomic-rename swap | After M5 lands | M5 |
 | 0006 | TUI-over-RESP (no in-process coupling) | After M7 lands | M7 |
+| 0008 | `toykv-cli` — stdlib only, mode detection | After M6 lands | M6 |
+| 0009 | `toykv-tui` — Bubble Tea, injectable `Doer` | After M7 lands | M7 |
+| 0010 | v1 release artefacts — Goreleaser, three binaries, SHA256SUMS | After M9 lands | M9 |
 
-*(Numbers track chronological landing order. TTL slotted in at 0004 when M4 closed and BGREWRITEAOF took 0005 when M5 closed — each was a real architectural decision worth recording; TUI bumped from 0004 → 0005 → 0006.)*
+*(Numbers track chronological landing order. TTL slotted in at 0004 when M4 closed and BGREWRITEAOF took 0005 when M5 closed — each was a real architectural decision worth recording; TUI bumped from 0004 → 0005 → 0006. 0008 and 0009 followed M6 and M7. 0010 lands with M9 because the release artefact policy — channels, archive shape, checksum surface — closes off real alternatives that the v2 roadmap may want to revisit.)*
 
-**Budget: 6.** Broke the "no more ADRs than toymq" parity rule (toymq landed 3) at 0004 and broke it further with 0005. Justifications: (a) the TUI is a second binary sharing the wire protocol — a real architecture decision; (b) the AOF v2 format and the absolute-deadline rule for TTL persistence had design-time alternatives (relative PX, separate binary expiry field) that we want to record the rejection of. Both are intentional parity breaks.
+**Budget: 7 written (0003, 0004, 0005, 0008, 0009, 0010 — 0006 was superseded by 0009 before being written). The "no more ADRs than toymq" parity rule was intentionally broken once the TUI brought a real dep tree and the release decision turned out to have non-trivial alternatives. M8 took zero ADRs (protocol-compat tests, not architecture). The rule of thumb at the bottom of this file still applies — each new ADR has to clear "real architectural decision (boundary, contract, invariant)" or it's an LLD note.**
 
 ## Format
 
