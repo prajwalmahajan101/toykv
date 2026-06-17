@@ -1,4 +1,4 @@
-.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep ci hooks clean help
+.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep chaos chaos-smoke ci hooks clean help
 
 GO          ?= go
 GOFMT       ?= gofmt
@@ -25,6 +25,8 @@ help:
 	@echo "  test       - go test -race -timeout $(TIMEOUT) ./..."
 	@echo "  bench-prep - print bench methodology and verify redis-benchmark"
 	@echo "  bench      - redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)"
+	@echo "  chaos      - full soak: go test -race -timeout 10m ./test/chaos/..."
+	@echo "  chaos-smoke- short soak: go test -short -race -timeout 2m ./test/chaos/..."
 	@echo "  ci         - fmt-check + vet + lint + test"
 	@echo "  hooks      - install .githooks as the repo hooksPath"
 	@echo "  clean      - remove $(BIN)/ and data/"
@@ -82,6 +84,12 @@ bench-prep:
 
 bench: bench-prep
 	redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)
+
+chaos:
+	$(GO) test -race -timeout 10m ./test/chaos/...
+
+chaos-smoke:
+	$(GO) test -short -race -timeout 2m ./test/chaos/...
 
 ci: fmt-check vet lint test
 
