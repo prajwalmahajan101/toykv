@@ -34,15 +34,19 @@ Recorded fields per run:
 
 ## Recorded runs
 
-### v1.0.0 baseline — TBD
+### v1.0.0 baseline
 
-> Run after M8 lands. Record one row per fsync policy.
+Recorded on the M9 release-prep branch, before tagging. Tool: `valkey-benchmark` (drop-in for `redis-benchmark`) from `valkey/valkey:8-alpine`, run via `docker run --rm --network host` against `bin/toykv` on the loopback. One process each; `-n 100000`, default 50 parallel clients, `--csv` for per-percentile latency. Latencies in ms.
 
-| Date | Commit | Host | fsync | `SET` p50 | `SET` p95 | `SET` rps | `GET` p50 | `GET` p95 | `GET` rps |
-|---|---|---|---|---|---|---|---|---|---|
-| _pending_ | _pending_ | _pending_ | `always` | — | — | — | — | — | — |
-| _pending_ | _pending_ | _pending_ | `everysec` | — | — | — | — | — | — |
-| _pending_ | _pending_ | _pending_ | `no` | — | — | — | — | — | — |
+**Host:** Linux 7.0.9-arch2-1 x86_64, 13th Gen Intel Core i7-1355U, 16 GiB RAM, NVMe SSD (ext4, default mount opts), kernel page cache warm.
+
+| Date | Commit | fsync | `SET` p50 | `SET` p95 | `SET` p99 | `SET` rps | `GET` p50 | `GET` p95 | `GET` p99 | `GET` rps |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-06-17 | `824ca78` | `always`   | 0.295 | 0.591 | 0.863 |  80 515 | 0.359 | 0.631 | 0.831 |  67 843 |
+| 2026-06-17 | `824ca78` | `everysec` | 0.479 | 0.703 | 0.903 |  55 340 | 0.471 | 0.687 | 0.847 |  56 148 |
+| 2026-06-17 | `824ca78` | `no`       | 0.487 | 0.647 | 0.807 |  53 908 | 0.319 | 0.599 | 0.775 |  72 780 |
+
+> **Reading these:** `always` came out fastest on this NVMe + warm-cache box, which inverts the usual ordering. Two reasons. (1) `fdatasync` on a desktop NVMe with the kernel write cache primed is well under 100 µs — cheaper than the per-request RESP+mutex overhead that dominates `everysec`/`no`. (2) Each policy runs a fresh AOF in a fresh tmpdir, so there's no pre-existing fragmentation. On a spinning disk, a saturated NVMe, or a cold box, the ordering will flip to the conventional `no > everysec > always`. The numbers are recorded — not a target.
 
 ## Reading the numbers
 
