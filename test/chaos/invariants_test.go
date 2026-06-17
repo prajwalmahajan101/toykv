@@ -1,3 +1,15 @@
+//go:build chaos
+
+// The chaos invariant suite runs long-form by default (5 min/test, ≥3 workers ×
+// SIGKILL/SIGSTOP/BGREWRITEAOF). Gated behind the `chaos` build tag so plain
+// `go test ./...` (and CI's default `test` job) skip it. Run via:
+//
+//	make chaos        // full soak, ~15 min
+//	make chaos-smoke  // -short -tags=chaos, ~30 s
+//
+// The always-on harness smoke (TestHarnessSmoke in main_test.go) is *not*
+// tagged — it exercises the build path every CI run.
+
 package chaos
 
 import (
