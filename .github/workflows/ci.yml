@@ -51,10 +51,22 @@ jobs:
       - name: e2e tests
         run: go test -race -timeout 10m ./test/e2e/...
 
+  chaos-smoke:
+    name: chaos-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: chaos soak (short, ~30s)
+        run: go test -short -race -timeout 3m ./test/chaos/...
+
   build:
     name: build
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, chaos-smoke]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
