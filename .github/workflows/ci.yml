@@ -61,7 +61,7 @@ jobs:
           go-version: '1.26'
           check-latest: true
       - name: chaos soak (short, ~30s)
-        run: go test -short -race -timeout 3m ./test/chaos/...
+        run: go test -tags=chaos -short -race -timeout 3m ./test/chaos/...
 
   build:
     name: build
