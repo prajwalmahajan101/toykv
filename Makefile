@@ -1,12 +1,16 @@
-.PHONY: build run cli tui fmt fmt-check vet lint test bench ci hooks clean help
+.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep ci hooks clean help
 
-GO        ?= go
-GOFMT     ?= gofmt
-PKGS      ?= ./...
-TIMEOUT   ?= 5m
-BIN       ?= bin
-ADDR      ?= :6390
-DIR       ?= ./data
+GO          ?= go
+GOFMT       ?= gofmt
+PKGS        ?= ./...
+TIMEOUT     ?= 5m
+BIN         ?= bin
+ADDR        ?= :6390
+DIR         ?= ./data
+BENCH_HOST  ?= 127.0.0.1
+BENCH_PORT  ?= 6390
+BENCH_N     ?= 100000
+BENCH_TESTS ?= set,get
 
 help:
 	@echo "Targets:"
@@ -19,7 +23,8 @@ help:
 	@echo "  vet        - go vet ./..."
 	@echo "  lint       - golangci-lint run ./..."
 	@echo "  test       - go test -race -timeout $(TIMEOUT) ./..."
-	@echo "  bench      - redis-benchmark -p 6390 -t set,get -n 100000"
+	@echo "  bench-prep - print bench methodology and verify redis-benchmark"
+	@echo "  bench      - redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)"
 	@echo "  ci         - fmt-check + vet + lint + test"
 	@echo "  hooks      - install .githooks as the repo hooksPath"
 	@echo "  clean      - remove $(BIN)/ and data/"
@@ -64,12 +69,19 @@ lint:
 test:
 	$(GO) test -race -timeout $(TIMEOUT) $(PKGS)
 
-bench:
+bench-prep:
 	@if ! command -v redis-benchmark >/dev/null 2>&1; then \
 	  echo "redis-benchmark not installed. Install redis-tools (apt) or redis (brew)."; \
 	  exit 1; \
 	fi
-	redis-benchmark -p 6390 -t set,get -n 100000
+	@echo "Bench methodology — record one row per fsync policy in docs/BENCHMARKS.md:"
+	@echo "  1. Start server:  ./$(BIN)/toykv -addr $(ADDR) -dir $(DIR) -appendfsync <always|everysec|no>"
+	@echo "  2. Run:           make bench"
+	@echo "  3. Vary knobs via BENCH_HOST / BENCH_PORT / BENCH_N / BENCH_TESTS."
+	@echo "Current run target: $(BENCH_HOST):$(BENCH_PORT)  -t $(BENCH_TESTS)  -n $(BENCH_N)"
+
+bench: bench-prep
+	redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)
 
 ci: fmt-check vet lint test
 
