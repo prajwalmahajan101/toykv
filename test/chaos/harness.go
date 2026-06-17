@@ -93,7 +93,7 @@ type Server struct {
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
-	stderr *threadSafeBuffer
+	stderr *threadSafeBuffer // persistent across restarts
 }
 
 // threadSafeBuffer wraps bytes.Buffer with a mutex so the harness can read
@@ -131,6 +131,7 @@ func NewServer(t *testing.T, fsync string) *Server {
 		Addr:        "127.0.0.1:" + strconv.Itoa(port),
 		Dir:         dir,
 		AppendFsync: fsync,
+		stderr:      &threadSafeBuffer{},
 	}
 }
 
@@ -143,22 +144,20 @@ func (s *Server) Start(t *testing.T) {
 		t.Fatal("chaos: Start called while server already running")
 	}
 
-	args := []string{"-addr", s.Addr, "-dir", s.Dir, "-appendfsync", s.AppendFsync, "-log-level", "warn"}
+	args := []string{"-addr", s.Addr, "-dir", s.Dir, "-appendfsync", s.AppendFsync, "-log-level", "info"}
 	//nolint:gosec // G204: built.Server is a path the test harness produced itself.
 	cmd := exec.Command(built.Server, args...)
-	buf := &threadSafeBuffer{}
-	cmd.Stderr = buf
+	cmd.Stderr = s.stderr // persistent buffer accumulates across restarts
 	cmd.Stdout = io.Discard
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("chaos: start: %v", err)
 	}
 	s.cmd = cmd
-	s.stderr = buf
 
 	if err := waitReady(s.Addr, 5*time.Second); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		t.Fatalf("chaos: not ready on %s: %v\nstderr:\n%s", s.Addr, err, buf.String())
+		t.Fatalf("chaos: not ready on %s: %v\nstderr:\n%s", s.Addr, err, s.stderr.String())
 	}
 }
 
