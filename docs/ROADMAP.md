@@ -191,7 +191,7 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 | M6 | CLI | ✅ | [#15](https://github.com/prajwalmahajan101/toykv/pull/15) [#16](https://github.com/prajwalmahajan101/toykv/pull/16) | `m6` |
 | M7 | TUI | ✅ | [#17](https://github.com/prajwalmahajan101/toykv/pull/17) [#19](https://github.com/prajwalmahajan101/toykv/pull/19) | `m7` |
 | M8 | Integration tests (protocol compat) | ✅ | _see `feat/integration-tests` PR series_ | `m8` |
-| M9 | Bench + polish + v1.0.0 | ⬜ | — | `v1.0.0` |
+| M9 | Bench + polish + v1.0.0 | ✅ | _see `feat/release-v1` PR_ | `v1.0.0` |
 
 ## Changes from the previous roadmap
 
