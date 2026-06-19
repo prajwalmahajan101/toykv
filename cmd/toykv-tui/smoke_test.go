@@ -102,25 +102,25 @@ func TestTUI_TeatestSmoke_SET(t *testing.T) {
 	tm.Type("foo bar")
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 
-	// Wait until the value pane shows the reply ("OK") OR the key list
-	// picks up the new "foo" entry — whichever lands first.
-	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
-		return containsAll(out, "foo") || containsAll(out, "OK")
-	}, teatest.WithDuration(2*time.Second), teatest.WithCheckInterval(25*time.Millisecond))
-
-	// Server-side ground truth: GET via a second client.
+	// Poll server-side for SET to land. Asserting on rendered output is
+	// racy: "foo" appears the moment it's typed (inside the input echo),
+	// long before the runMutating tea.Cmd fires the actual SET. Server
+	// state is the durable signal.
 	verify, err := client.DialTimeout(addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("verify dial: %v", err)
 	}
 	defer func() { _ = verify.Close() }()
-	v, err := verify.Do("GET", "foo")
-	if err != nil {
-		t.Fatalf("verify GET: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		v, err := verify.Do("GET", "foo")
+		if err == nil && v.Kind == resp.KindBulkString && !v.IsNull && string(v.Bytes) == "bar" {
+			goto setLanded
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	if v.Kind != resp.KindBulkString || v.IsNull || string(v.Bytes) != "bar" {
-		t.Fatalf("verify GET = %+v, want bulk=\"bar\"", v)
-	}
+	t.Fatal("SET foo bar never landed on the server within 2s")
+setLanded:
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
