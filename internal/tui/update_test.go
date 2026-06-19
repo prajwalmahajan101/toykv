@@ -114,13 +114,13 @@ func TestNewKVMode_SubmitTokenisesAndSendsSET(t *testing.T) {
 	f := newFake()
 	m := NewModel(f, ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, keyMsg("n"))
-	if m.ModeNow() != ModeNewKV {
-		t.Fatalf("expected NewKV mode, got %v", m.ModeNow())
+	if m.Mode() != ModeNewKV {
+		t.Fatalf("expected NewKV mode, got %v", m.Mode())
 	}
 	m = typeString(m, "foo bar")
 	m, cmd := runMsg(m, keyMsg("enter"))
-	if m.ModeNow() != ModeNormal {
-		t.Fatalf("after enter mode=%v", m.ModeNow())
+	if m.Mode() != ModeNormal {
+		t.Fatalf("after enter mode=%v", m.Mode())
 	}
 	if cmd == nil {
 		t.Fatal("submit should issue a tea.Cmd")
@@ -137,7 +137,7 @@ func TestConfirmMode_FlushDB(t *testing.T) {
 	f := newFake()
 	m := NewModel(f, ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, keyMsg("F"))
-	if m.ModeNow() != ModeConfirm {
+	if m.Mode() != ModeConfirm {
 		t.Fatalf("expected Confirm mode")
 	}
 	_, cmd := runMsg(m, keyMsg("y"))
@@ -156,7 +156,7 @@ func TestConfirmMode_DeniedDoesNothing(t *testing.T) {
 	m := NewModel(f, ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, keyMsg("F"))
 	m, cmd := runMsg(m, keyMsg("n"))
-	if m.ModeNow() != ModeNormal {
+	if m.Mode() != ModeNormal {
 		t.Fatalf("n should drop back to Normal")
 	}
 	if cmd != nil {
@@ -171,7 +171,7 @@ func TestRawCmdMode_TokenisesAndDispatches(t *testing.T) {
 	f := newFake()
 	m := NewModel(f, ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, keyMsg(":"))
-	if m.ModeNow() != ModeRawCmd {
+	if m.Mode() != ModeRawCmd {
 		t.Fatalf("expected RawCmd mode")
 	}
 	m = typeString(m, "PING")
@@ -203,12 +203,12 @@ func TestExpireMode_RejectsNonInteger(t *testing.T) {
 func TestEscFromInputModeReturnsToNormal(t *testing.T) {
 	m := NewModel(newFake(), ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, keyMsg("/"))
-	if m.ModeNow() != ModeFilter {
+	if m.Mode() != ModeFilter {
 		t.Fatalf("expected Filter mode")
 	}
 	m, _ = runMsg(m, keyMsg("esc"))
-	if m.ModeNow() != ModeNormal {
-		t.Fatalf("esc should drop to Normal, got %v", m.ModeNow())
+	if m.Mode() != ModeNormal {
+		t.Fatalf("esc should drop to Normal, got %v", m.Mode())
 	}
 }
 

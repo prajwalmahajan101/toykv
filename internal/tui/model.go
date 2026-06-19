@@ -130,7 +130,7 @@ func NewModel(client Doer, addr string, refresh time.Duration, fsyncLabel string
 func (m Model) FocusedKey() string { return m.focused }
 
 // Mode exposes the current input mode (used by tests).
-func (m Model) ModeNow() Mode { return m.mode }
+func (m Model) Mode() Mode { return m.mode }
 
 // Keys exposes the current key list (used by tests).
 func (m Model) Keys() []KeyInfo { return m.keys }

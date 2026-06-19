@@ -116,19 +116,15 @@ func (m Model) renderStatus() string {
 	return lipgloss.NewStyle().Width(m.width).Render(strings.Join(parts, "  ·  "))
 }
 
-// pane returns a bordered, fixed-width box. `focused` selects the accent
-// border colour.
+// pane returns a bordered, fixed-width box. `focused` selects between
+// the two precomputed pane styles in the bundle so we don't rebuild the
+// lipgloss.Style on every redraw.
 func (m Model) pane(content string, w, h int, focused bool) string {
-	bord := m.st.borderOff
+	base := m.st.paneOff
 	if focused {
-		bord = m.st.borderOn
+		base = m.st.paneOn
 	}
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(bord).
-		Width(w - 2).
-		Height(h - 2).
-		Render(content)
+	return base.Width(w - 2).Height(h - 2).Render(content)
 }
 
 // renderLeft draws the key list pane (bordered).

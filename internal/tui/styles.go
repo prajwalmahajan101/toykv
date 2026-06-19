@@ -29,6 +29,8 @@ type styles struct {
 	respErr    lipgloss.Style
 	borderOn   lipgloss.Color
 	borderOff  lipgloss.Color
+	paneOn     lipgloss.Style // bordered pane with focused accent
+	paneOff    lipgloss.Style // bordered pane with muted accent
 	tooSmall   lipgloss.Style
 	promptMark lipgloss.Style
 }
@@ -41,6 +43,7 @@ func newStyles(noColor bool) styles {
 		id := lipgloss.NewStyle()
 		bold := lipgloss.NewStyle().Bold(true)
 		reverse := lipgloss.NewStyle().Reverse(true)
+		pane := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 		return styles{
 			accent:     bold,
 			muted:      id,
@@ -61,6 +64,8 @@ func newStyles(noColor bool) styles {
 			respErr:    bold,
 			borderOn:   lipgloss.Color(""),
 			borderOff:  lipgloss.Color(""),
+			paneOn:     pane,
+			paneOff:    pane,
 			tooSmall:   bold,
 			promptMark: bold,
 		}
@@ -72,25 +77,31 @@ func newStyles(noColor bool) styles {
 	yellow := lipgloss.AdaptiveColor{Light: "#af8700", Dark: "#ffd75f"}
 
 	return styles{
-		accent:     lipgloss.NewStyle().Foreground(accent).Bold(true),
-		muted:      lipgloss.NewStyle().Foreground(muted),
-		header:     lipgloss.NewStyle().Foreground(accent).Bold(true),
-		statusKey:  lipgloss.NewStyle().Foreground(muted),
-		statusVal:  lipgloss.NewStyle(),
-		errBanner:  lipgloss.NewStyle().Foreground(red).Bold(true),
-		okBanner:   lipgloss.NewStyle().Foreground(green),
-		warn:       lipgloss.NewStyle().Foreground(yellow),
-		cursorRow:  lipgloss.NewStyle().Reverse(true).Bold(true),
-		colHeader:  lipgloss.NewStyle().Foreground(muted).Bold(true),
-		hintKey:    lipgloss.NewStyle().Foreground(accent).Bold(true),
-		hintDesc:   lipgloss.NewStyle().Foreground(muted),
-		keyName:    lipgloss.NewStyle().Bold(true),
-		filterHit:  lipgloss.NewStyle().Foreground(yellow).Bold(true),
-		respInt:    lipgloss.NewStyle().Foreground(accent),
-		respNil:    lipgloss.NewStyle().Foreground(yellow),
-		respErr:    lipgloss.NewStyle().Foreground(red).Bold(true),
-		borderOn:   lipgloss.Color("#5fd7ff"),
-		borderOff:  lipgloss.Color("#3a3a3a"),
+		accent:    lipgloss.NewStyle().Foreground(accent).Bold(true),
+		muted:     lipgloss.NewStyle().Foreground(muted),
+		header:    lipgloss.NewStyle().Foreground(accent).Bold(true),
+		statusKey: lipgloss.NewStyle().Foreground(muted),
+		statusVal: lipgloss.NewStyle(),
+		errBanner: lipgloss.NewStyle().Foreground(red).Bold(true),
+		okBanner:  lipgloss.NewStyle().Foreground(green),
+		warn:      lipgloss.NewStyle().Foreground(yellow),
+		cursorRow: lipgloss.NewStyle().Reverse(true).Bold(true),
+		colHeader: lipgloss.NewStyle().Foreground(muted).Bold(true),
+		hintKey:   lipgloss.NewStyle().Foreground(accent).Bold(true),
+		hintDesc:  lipgloss.NewStyle().Foreground(muted),
+		keyName:   lipgloss.NewStyle().Bold(true),
+		filterHit: lipgloss.NewStyle().Foreground(yellow).Bold(true),
+		respInt:   lipgloss.NewStyle().Foreground(accent),
+		respNil:   lipgloss.NewStyle().Foreground(yellow),
+		respErr:   lipgloss.NewStyle().Foreground(red).Bold(true),
+		borderOn:  lipgloss.Color("#5fd7ff"),
+		borderOff: lipgloss.Color("#3a3a3a"),
+		paneOn: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#5fd7ff")),
+		paneOff: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#3a3a3a")),
 		tooSmall:   lipgloss.NewStyle().Foreground(red).Bold(true),
 		promptMark: lipgloss.NewStyle().Foreground(accent).Bold(true),
 	}
