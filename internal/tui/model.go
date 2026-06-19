@@ -99,9 +99,10 @@ type Model struct {
 	width  int
 	height int
 
-	focus    Focus
-	showHelp bool
-	st       styles
+	focus       Focus
+	showHelp    bool
+	valueScroll int // line offset for the value pane (Stack + FocusRight only)
+	st          styles
 
 	tickN    uint64 // incremented every tickMsg; used to filter stale refreshes
 	fetchGen uint64 // bumped before scheduling a fetch; replies with older gen are dropped
