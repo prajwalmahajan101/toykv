@@ -70,6 +70,13 @@ func newStyles(noColor bool) styles {
 			promptMark: bold,
 		}
 	}
+	// AdaptiveColor lets Lipgloss pick between Light/Dark variants based
+	// on detected background. The underlying color profile cascades:
+	// truecolor → 256 → 16 → monochrome. NO_COLOR is honoured above by
+	// returning the identity style set; on terminals reporting 16 colours
+	// (TERM=xterm, linux console) Lipgloss substitutes the nearest ANSI
+	// approximation automatically. There is no separate 16-colour theme
+	// to maintain.
 	accent := lipgloss.AdaptiveColor{Light: "#0087d7", Dark: "#5fd7ff"}
 	muted := lipgloss.AdaptiveColor{Light: "#6c6c6c", Dark: "#808080"}
 	red := lipgloss.AdaptiveColor{Light: "#af0000", Dark: "#ff5f5f"}
