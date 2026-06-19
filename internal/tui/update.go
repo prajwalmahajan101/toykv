@@ -90,9 +90,43 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Help overlay swallows nav keys until dismissed.
+	if m.showHelp {
+		switch msg.String() {
+		case "?", "esc", "q":
+			m.showHelp = false
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "?":
+		m.showHelp = true
+		return m, nil
+	case "tab":
+		if m.focus == FocusLeft {
+			m.focus = FocusRight
+		} else {
+			m.focus = FocusLeft
+		}
+		return m, nil
+	case "g":
+		if len(m.keys) > 0 {
+			m.cursor = 0
+			m.focused = m.keys[0].Name
+			m.hasVal = false
+			return m, fetchRefresh(m.client, m.filter, m.focused)
+		}
+		return m, nil
+	case "G":
+		if len(m.keys) > 0 {
+			m.cursor = len(m.keys) - 1
+			m.focused = m.keys[m.cursor].Name
+			m.hasVal = false
+			return m, fetchRefresh(m.client, m.filter, m.focused)
+		}
+		return m, nil
 	case "j", "down":
 		if m.cursor < len(m.keys)-1 {
 			m.cursor++
