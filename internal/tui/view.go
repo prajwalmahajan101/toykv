@@ -9,58 +9,148 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/respfmt"
 )
 
-var (
-	styleCursor = lipgloss.NewStyle().Reverse(true)
-	styleHeader = lipgloss.NewStyle().Bold(true)
-	styleStatus = lipgloss.NewStyle().Faint(true)
-	styleErr    = lipgloss.NewStyle().Bold(true)
-)
-
-// View renders the two-pane layout, status bar, and any modal overlay.
+// View renders the TUI. Layout depends on the breakpoint:
+//
+//	wide / mid / narrow → two-pane (list | value)
+//	stack              → list above, value below
+//	tiny               → "terminal too small" banner
+//
+// Headers, status, error, prompt, and footer hint bar wrap the body.
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "toykv-tui — waiting for terminal size…\n"
 	}
+	if m.breakpoint() == LayoutTiny {
+		msg := m.st.tooSmall.Render("terminal too small — need ≥ 60×16")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg)
+	}
 
-	left := m.renderLeft(m.leftWidth(), m.bodyHeight())
-	right := m.renderRight(m.rightWidth(), m.bodyHeight())
+	header := m.renderHeader()
+	footer := renderFooter(m.st, m.width)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-
-	out := body + "\n" + m.renderStatus()
+	// Reserve rows for header, status, footer; conditionally for error and prompt.
+	overhead := 1 /*header*/ + 1 /*status*/ + 1 /*footer*/
+	errLine := ""
+	promptLine := ""
 	if m.err != "" {
-		out += "\n" + styleErr.Render("(error) "+m.err)
+		errLine = m.st.errBanner.Render("[!] " + m.err)
+		overhead++
 	}
 	if m.prompt != "" {
-		out += "\n" + m.prompt + m.input.View()
+		promptLine = m.st.promptMark.Render(m.prompt) + m.input.View()
+		overhead++
 	}
-	return out
+	bodyH := m.height - overhead
+	if bodyH < 3 {
+		bodyH = 3
+	}
+
+	var body string
+	if m.breakpoint() == LayoutStack {
+		body = m.renderStacked(m.width, bodyH)
+	} else {
+		left := m.renderLeft(m.leftWidth(), bodyH)
+		right := m.renderRight(m.rightWidth(), bodyH)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
+
+	if m.showHelp {
+		body = renderHelp(m.st, m.width, bodyH)
+	}
+
+	pieces := []string{header, body, m.renderStatus()}
+	if errLine != "" {
+		pieces = append(pieces, errLine)
+	}
+	if promptLine != "" {
+		pieces = append(pieces, promptLine)
+	}
+	pieces = append(pieces, footer)
+	return strings.Join(pieces, "\n")
 }
 
-func (m Model) leftWidth() int  { return m.width / 3 }
+func (m Model) leftWidth() int {
+	switch m.breakpoint() {
+	case LayoutNarrow:
+		return m.width / 2
+	default:
+		return m.width * 2 / 5
+	}
+}
+
 func (m Model) rightWidth() int { return m.width - m.leftWidth() }
-func (m Model) bodyHeight() int {
-	h := m.height - 3 // status + maybe err + prompt
-	if h < 1 {
-		return 1
+
+// renderHeader draws the persistent context strip at the top.
+func (m Model) renderHeader() string {
+	parts := []string{
+		m.st.header.Render("toykv"),
+		m.st.statusVal.Render(m.status.Addr),
 	}
-	return h
+	if m.status.FsyncLabel != "" {
+		parts = append(parts,
+			m.st.statusKey.Render("fsync=")+m.st.statusVal.Render(m.status.FsyncLabel))
+	}
+	parts = append(parts,
+		m.st.statusKey.Render("lat=")+m.st.statusVal.Render(formatLatency(m.status.Latency)))
+	parts = append(parts,
+		m.st.statusKey.Render("dbsize=")+m.st.statusVal.Render(fmt.Sprintf("%d", m.status.DBSize)))
+	line := strings.Join(parts, "  ·  ")
+	return lipgloss.NewStyle().Width(m.width).Render(line)
 }
 
-func (m Model) renderLeft(w, h int) string {
-	var b strings.Builder
-	b.WriteString(styleHeader.Render(fmt.Sprintf(" keys (%d)", len(m.keys))))
-	b.WriteString("\n")
-	// Filter rows by client-side glob if active.
-	rows := make([]KeyInfo, 0, len(m.keys))
-	for _, k := range m.keys {
-		if m.filter == "" || m.filter == "*" || globMatch(m.filter, k.Name) {
-			rows = append(rows, k)
-		}
+// renderStatus is the single-line filter / mode echo just below the body.
+func (m Model) renderStatus() string {
+	var parts []string
+	if m.filter != "" && m.filter != "*" {
+		parts = append(parts, m.st.statusKey.Render("filter=")+m.st.statusVal.Render(m.filter))
 	}
-	limit := h - 1
-	if limit < 0 {
-		limit = 0
+	if m.mode == ModeConfirm {
+		parts = append(parts, m.st.warn.Render(m.prompt))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, m.st.muted.Render(fmt.Sprintf("%d keys", len(m.keys))))
+	}
+	return lipgloss.NewStyle().Width(m.width).Render(strings.Join(parts, "  ·  "))
+}
+
+// pane returns a bordered, fixed-width box. `focused` selects the accent
+// border colour.
+func (m Model) pane(content string, w, h int, focused bool) string {
+	bord := m.st.borderOff
+	if focused {
+		bord = m.st.borderOn
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(bord).
+		Width(w - 2).
+		Height(h - 2).
+		Render(content)
+}
+
+// renderLeft draws the key list pane (bordered).
+func (m Model) renderLeft(w, h int) string {
+	nameW, sizeW, ttlW := m.colWidths(w - 2)
+
+	var b strings.Builder
+
+	// Column header row.
+	colName := m.st.colHeader.Render(padRight("NAME", nameW))
+	colTTL := m.st.colHeader.Render(padRight("TTL", ttlW))
+	headerCols := []string{"  " + colName}
+	if sizeW > 0 {
+		headerCols = append(headerCols, m.st.colHeader.Render(padRight("SIZE", sizeW)))
+	}
+	headerCols = append(headerCols, colTTL)
+	b.WriteString(strings.Join(headerCols, "  "))
+	b.WriteString("\n")
+	b.WriteString(m.st.muted.Render(strings.Repeat("─", w-3)))
+	b.WriteString("\n")
+
+	rows := m.visibleKeys()
+	limit := h - 4
+	if limit < 1 {
+		limit = 1
 	}
 	start := 0
 	if m.cursor >= limit && len(rows) > limit {
@@ -70,52 +160,207 @@ func (m Model) renderLeft(w, h int) string {
 	if end > len(rows) {
 		end = len(rows)
 	}
+
 	for i := start; i < end; i++ {
-		row := fmt.Sprintf(" %-20s  ttl=%-7s  %s",
-			truncate(rows[i].Name, 20),
-			formatTTL(rows[i].TTL),
-			formatBytes(rows[i].Size),
-		)
-		if i == m.cursor {
-			row = styleCursor.Render(row)
-		}
+		row := m.renderKeyRow(rows[i], nameW, sizeW, ttlW, i == m.cursor)
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
-	return lipgloss.NewStyle().Width(w).Render(b.String())
+
+	focused := m.focus == FocusLeft
+	return m.pane(b.String(), w, h, focused)
 }
 
+// renderKeyRow renders one row, applying cursor highlight if selected.
+func (m Model) renderKeyRow(k KeyInfo, nameW, sizeW, ttlW int, isCursor bool) string {
+	cursor := "  "
+	if isCursor {
+		cursor = m.st.accent.Render("▸ ")
+	}
+
+	name := truncate(k.Name, nameW)
+	nameRendered := m.highlightFilter(padRight(name, nameW))
+
+	cells := []string{cursor + nameRendered}
+	if sizeW > 0 {
+		cells = append(cells, padRight(formatBytes(k.Size), sizeW))
+	}
+	cells = append(cells, m.styleTTL(formatTTL(k.TTL), ttlW, k.TTL))
+
+	row := strings.Join(cells, "  ")
+	if isCursor {
+		return m.st.cursorRow.Render(row)
+	}
+	return row
+}
+
+// styleTTL pads then applies the warn style when the countdown is short.
+func (m Model) styleTTL(s string, w int, ttl int64) string {
+	padded := padRight(s, w)
+	switch {
+	case ttl == -1, ttl == -2:
+		return m.st.muted.Render(padded)
+	case ttl > 0 && ttl < 60:
+		return m.st.warn.Render(padded)
+	default:
+		return padded
+	}
+}
+
+// highlightFilter colours the substring(s) in name that match the current
+// filter glob. The cheap implementation highlights the literal segments
+// between glob wildcards.
+func (m Model) highlightFilter(padded string) string {
+	if m.filter == "" || m.filter == "*" {
+		return padded
+	}
+	segs := globLiterals(m.filter)
+	if len(segs) == 0 {
+		return padded
+	}
+	out := padded
+	for _, seg := range segs {
+		if seg == "" {
+			continue
+		}
+		idx := strings.Index(out, seg)
+		if idx < 0 {
+			continue
+		}
+		out = out[:idx] + m.st.filterHit.Render(seg) + out[idx+len(seg):]
+	}
+	return out
+}
+
+// renderRight draws the value pane with metadata header + pretty value.
 func (m Model) renderRight(w, h int) string {
 	var b strings.Builder
-	b.WriteString(styleHeader.Render(" value"))
-	b.WriteString("\n")
 	if m.focused == "" {
-		b.WriteString(" (no key)\n")
-	} else if !m.hasVal {
-		b.WriteString(" (loading…)\n")
-	} else {
-		b.WriteString(respfmt.PrettyString(m.value))
-		b.WriteString("\n")
+		b.WriteString(m.st.muted.Render("(no key)\n"))
+		return m.pane(b.String(), w, h, m.focus == FocusRight)
 	}
-	return lipgloss.NewStyle().Width(w).Render(b.String())
+
+	b.WriteString(m.st.keyName.Render(m.focused))
+	b.WriteString("\n")
+	b.WriteString(m.st.muted.Render(strings.Repeat("─", w-4)))
+	b.WriteString("\n")
+
+	meta := []string{
+		m.st.statusKey.Render("type ") + m.st.statusVal.Render(kindOrDefault(m.focusedKind())),
+		m.st.statusKey.Render("ttl  ") + m.styleTTL(formatTTL(m.focusedTTL()), 8, m.focusedTTL()),
+		m.st.statusKey.Render("size ") + m.st.statusVal.Render(formatBytes(m.focusedSize())),
+	}
+	b.WriteString(strings.Join(meta, "\n"))
+	b.WriteString("\n\n")
+
+	if !m.hasVal {
+		b.WriteString(m.st.muted.Render("(loading…)"))
+	} else {
+		b.WriteString(m.colorizePretty(respfmt.PrettyString(m.value)))
+	}
+
+	return m.pane(b.String(), w, h, m.focus == FocusRight)
 }
 
-func (m Model) renderStatus() string {
-	parts := []string{
-		m.status.Addr,
-		fmt.Sprintf("dbsize=%d", m.status.DBSize),
+// renderStacked draws list-above-value for narrow terminals.
+func (m Model) renderStacked(w, totalH int) string {
+	listH := totalH * 6 / 10
+	valH := totalH - listH
+	left := m.renderLeft(w, listH)
+	right := m.renderRight(w, valH)
+	return lipgloss.JoinVertical(lipgloss.Left, left, right)
+}
+
+// colorizePretty applies semantic colour to the existing PrettyString
+// output. It is line-oriented so it can't be tricked by embedded quotes.
+func (m Model) colorizePretty(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "(integer)"):
+			lines[i] = m.st.respInt.Render(line)
+		case strings.HasPrefix(line, "(nil)"):
+			lines[i] = m.st.respNil.Render(line)
+		case strings.HasPrefix(line, "(error)"):
+			lines[i] = m.st.respErr.Render(line)
+		}
 	}
-	if m.status.FsyncLabel != "" {
-		parts = append(parts, "fsync="+m.status.FsyncLabel)
+	return strings.Join(lines, "\n")
+}
+
+// visibleKeys returns the filtered key slice the renderer iterates over.
+func (m Model) visibleKeys() []KeyInfo {
+	if m.filter == "" || m.filter == "*" {
+		return m.keys
 	}
-	parts = append(parts, "lat="+formatLatency(m.status.Latency))
-	if m.filter != "" && m.filter != "*" {
-		parts = append(parts, "filter="+m.filter)
+	out := make([]KeyInfo, 0, len(m.keys))
+	for _, k := range m.keys {
+		if globMatch(m.filter, k.Name) {
+			out = append(out, k)
+		}
 	}
-	if m.mode == ModeConfirm {
-		parts = append(parts, m.prompt)
+	return out
+}
+
+func (m Model) focusedKind() string {
+	if m.cursor >= 0 && m.cursor < len(m.keys) {
+		return m.keys[m.cursor].Kind
 	}
-	return styleStatus.Render(strings.Join(parts, " · "))
+	return ""
+}
+
+func (m Model) focusedTTL() int64 {
+	if m.cursor >= 0 && m.cursor < len(m.keys) {
+		return m.keys[m.cursor].TTL
+	}
+	return -1
+}
+
+func (m Model) focusedSize() int {
+	if m.cursor >= 0 && m.cursor < len(m.keys) {
+		return m.keys[m.cursor].Size
+	}
+	return 0
+}
+
+func kindOrDefault(k string) string {
+	if k == "" {
+		return "string"
+	}
+	return k
+}
+
+// globLiterals splits an fnmatch-style glob into its literal segments
+// (the parts between *, ?, and []). Used to highlight what actually
+// matched in the key list.
+func globLiterals(g string) []string {
+	out := []string{}
+	cur := strings.Builder{}
+	for i := 0; i < len(g); i++ {
+		c := g[i]
+		if c == '*' || c == '?' {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		if c == '[' {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			for i < len(g) && g[i] != ']' {
+				i++
+			}
+			continue
+		}
+		cur.WriteByte(c)
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 func truncate(s string, n int) string {
