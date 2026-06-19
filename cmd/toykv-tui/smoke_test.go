@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -182,5 +183,30 @@ func TestRun_BadAddrExit2(t *testing.T) {
 	code := run([]string{"-addr", addr, "-timeout", "200ms"}, io.Discard, io.Discard)
 	if code != exitFatal {
 		t.Fatalf("want exit %d, got %d", exitFatal, code)
+	}
+}
+
+// TestRun_LogFileWrittenOnDialFailure exercises the --log flag and
+// confirms a startup record reaches the file even when dial fails.
+func TestRun_LogFileWrittenOnDialFailure(t *testing.T) {
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	logPath := t.TempDir() + "/tui.log"
+	code := run([]string{"-addr", addr, "-timeout", "200ms", "-log", logPath},
+		io.Discard, io.Discard)
+	if code != exitFatal {
+		t.Fatalf("want exit %d, got %d", exitFatal, code)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !bytes.Contains(data, []byte("toykv-tui starting")) {
+		t.Errorf("log file missing startup line:\n%s", data)
+	}
+	if !bytes.Contains(data, []byte("dial failed")) {
+		t.Errorf("log file missing dial-failed line:\n%s", data)
 	}
 }
