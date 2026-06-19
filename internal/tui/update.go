@@ -10,12 +10,25 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/cmdparse"
 )
 
-// Init kicks off the first refresh tick.
+// Init kicks off the first refresh tick. NewModel seeds fetchGen=1 so
+// the first refreshMsg matches without a bump here.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchRefresh(m.client, m.filter, m.focused),
+		fetchRefresh(m.client, m.filter, m.focused, m.fetchGen),
 		tickCmd(m.refresh, m.tickN+1),
 	)
+}
+
+// scheduleFetch bumps the fetch generation and returns both the updated
+// model and the tea.Cmd that runs the refresh. Callers chain through:
+//
+//	m, cmd := m.scheduleFetch()
+//	return m, cmd
+//
+// Any refreshMsg arriving with a stale gen is silently dropped by Update.
+func (m Model) scheduleFetch() (Model, tea.Cmd) {
+	m.fetchGen++
+	return m, fetchRefresh(m.client, m.filter, m.focused, m.fetchGen)
 }
 
 // Update is the Bubble Tea reducer. See LLD §7.3.
@@ -31,11 +44,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.tickN = msg.n
-		return m, fetchRefresh(m.client, m.filter, m.focused)
+		return m.scheduleFetch()
 
 	case refreshMsg:
+		// Drop stale generations — a newer fetch has already been scheduled.
+		// gen=0 is treated as untagged (test fixtures) and always applied.
+		if msg.gen != 0 && msg.gen != m.fetchGen {
+			return m, nil
+		}
 		if msg.err != "" {
-			m.err = msg.err
+			m.err = "refresh: " + msg.err
+			// Clear value state — the underlying key may no longer exist.
+			m.hasVal = false
 		} else {
 			m.err = ""
 			m.keys = msg.keys
@@ -68,7 +88,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status.Latency = msg.latency
 		if msg.refresh {
-			return m, fetchRefresh(m.client, m.filter, m.focused)
+			return m.scheduleFetch()
 		}
 		return m, nil
 
@@ -116,7 +136,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.focused = m.keys[0].Name
 			m.hasVal = false
-			return m, fetchRefresh(m.client, m.filter, m.focused)
+			return m.scheduleFetch()
 		}
 		return m, nil
 	case "G":
@@ -124,7 +144,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = len(m.keys) - 1
 			m.focused = m.keys[m.cursor].Name
 			m.hasVal = false
-			return m, fetchRefresh(m.client, m.filter, m.focused)
+			return m.scheduleFetch()
 		}
 		return m, nil
 	case "j", "down":
@@ -132,7 +152,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 			m.focused = m.keys[m.cursor].Name
 			m.hasVal = false
-			return m, fetchRefresh(m.client, m.filter, m.focused)
+			return m.scheduleFetch()
 		}
 		return m, nil
 	case "k", "up":
@@ -140,11 +160,11 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 			m.focused = m.keys[m.cursor].Name
 			m.hasVal = false
-			return m, fetchRefresh(m.client, m.filter, m.focused)
+			return m.scheduleFetch()
 		}
 		return m, nil
 	case "r":
-		return m, fetchRefresh(m.client, m.filter, m.focused)
+		return m.scheduleFetch()
 	case "/":
 		return m.enterInput(ModeFilter, "filter (glob): ", m.filter), nil
 	case "n":
@@ -242,7 +262,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.focused = ""
 		m.hasVal = false
-		return m, fetchRefresh(m.client, m.filter, m.focused)
+		return m.scheduleFetch()
 	case ModeNewKV:
 		argv, err := cmdparse.Tokenise(val)
 		if err != nil || len(argv) < 2 {

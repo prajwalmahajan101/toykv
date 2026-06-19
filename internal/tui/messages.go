@@ -10,6 +10,9 @@ import (
 type tickMsg struct{ n uint64 }
 
 // refreshMsg carries the result of a periodic KEYS / TTL / GET sweep.
+// gen is the fetch generation that scheduled this sweep; Update drops
+// any reply whose gen no longer matches Model.fetchGen so stale GETs
+// from rapid cursor moves don't paint over the current focus.
 type refreshMsg struct {
 	keys    []KeyInfo
 	dbsize  int64
@@ -17,6 +20,7 @@ type refreshMsg struct {
 	hasVal  bool
 	latency time.Duration
 	err     string
+	gen     uint64
 }
 
 // replyMsg carries the result of a one-shot mutating command issued in
