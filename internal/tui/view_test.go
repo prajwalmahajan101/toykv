@@ -69,6 +69,37 @@ func TestView_HelpOverlay(t *testing.T) {
 	}
 }
 
+func TestHelpOverlay_QQuitsWhileOpen(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m, _ = runMsg(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, _ = runMsg(m, refreshMsg{keys: []KeyInfo{{Name: "k"}}})
+	m, _ = runMsg(m, keyMsg("?"))
+	if !m.showHelp {
+		t.Fatalf("setup: help should be open")
+	}
+	_, cmd := runMsg(m, keyMsg("q"))
+	if cmd == nil {
+		t.Fatal("q with help open should issue quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("q cmd did not produce QuitMsg")
+	}
+}
+
+func TestHelpOverlay_EscDismissesWithoutQuit(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m, _ = runMsg(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, _ = runMsg(m, refreshMsg{keys: []KeyInfo{{Name: "k"}}})
+	m, _ = runMsg(m, keyMsg("?"))
+	m, cmd := runMsg(m, keyMsg("esc"))
+	if m.showHelp {
+		t.Errorf("esc should dismiss help overlay")
+	}
+	if cmd != nil {
+		t.Errorf("esc should not issue a tea.Cmd")
+	}
+}
+
 func TestView_HelpOverlaySupersedesErrAndPrompt(t *testing.T) {
 	m := NewModel(newFake(), ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, tea.WindowSizeMsg{Width: 100, Height: 30})
