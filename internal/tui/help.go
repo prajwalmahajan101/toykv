@@ -111,8 +111,10 @@ func renderFooter(st styles, width int) string {
 		picked = append(picked, p)
 	}
 
-	all := append(picked, reserved...)
-	var parts []string
+	all := make([]binding, 0, len(picked)+len(reserved))
+	all = append(all, picked...)
+	all = append(all, reserved...)
+	parts := make([]string, 0, len(all))
 	for _, b := range all {
 		parts = append(parts, render(b))
 	}
@@ -123,9 +125,10 @@ func renderFooter(st styles, width int) string {
 // width/height are the body dimensions to centre over.
 func renderHelp(st styles, width, height int) string {
 	groups := []string{"Navigate", "Mutate", "View", "Meta"}
-	var lines []string
-	lines = append(lines, st.accent.Render("toykv-tui · keybindings"))
-	lines = append(lines, "")
+	lines := []string{
+		st.accent.Render("toykv-tui · keybindings"),
+		"",
+	}
 	for _, g := range groups {
 		lines = append(lines, st.colHeader.Render(g))
 		for _, b := range bindings {
