@@ -179,7 +179,7 @@ func (m Model) renderKeyRow(k KeyInfo, nameW, sizeW, ttlW int, isCursor bool) st
 	}
 
 	name := truncate(k.Name, nameW)
-	nameRendered := m.highlightFilter(padRight(name, nameW))
+	nameRendered := m.highlightFilter(name, nameW)
 
 	cells := []string{cursor + nameRendered}
 	if sizeW > 0 {
@@ -207,29 +207,83 @@ func (m Model) styleTTL(s string, w int, ttl int64) string {
 	}
 }
 
-// highlightFilter colours the substring(s) in name that match the current
-// filter glob. The cheap implementation highlights the literal segments
-// between glob wildcards.
-func (m Model) highlightFilter(padded string) string {
+// highlightFilter wraps each literal segment of the glob filter that
+// occurs in `name` with the filterHit style, then pads to `width` *after*
+// styling so trailing spaces never end up inside an ANSI escape. Offsets
+// are computed against the raw name; once a span has been claimed, later
+// segments cannot re-claim or nest inside it.
+func (m Model) highlightFilter(name string, width int) string {
+	pad := strings.Repeat(" ", maxInt(0, width-len(name)))
 	if m.filter == "" || m.filter == "*" {
-		return padded
+		return name + pad
 	}
 	segs := globLiterals(m.filter)
 	if len(segs) == 0 {
-		return padded
+		return name + pad
 	}
-	out := padded
+
+	type span struct{ start, end int }
+	var claimed []span
+	overlaps := func(start, end int) bool {
+		for _, s := range claimed {
+			if start < s.end && end > s.start {
+				return true
+			}
+		}
+		return false
+	}
+
 	for _, seg := range segs {
 		if seg == "" {
 			continue
 		}
-		idx := strings.Index(out, seg)
-		if idx < 0 {
-			continue
+		// Find first non-overlapping match.
+		searchFrom := 0
+		for {
+			idx := strings.Index(name[searchFrom:], seg)
+			if idx < 0 {
+				break
+			}
+			absStart, absEnd := searchFrom+idx, searchFrom+idx+len(seg)
+			if overlaps(absStart, absEnd) {
+				searchFrom = absStart + 1
+				continue
+			}
+			claimed = append(claimed, span{absStart, absEnd})
+			break
 		}
-		out = out[:idx] + m.st.filterHit.Render(seg) + out[idx+len(seg):]
 	}
-	return out
+	if len(claimed) == 0 {
+		return name + pad
+	}
+
+	// Order spans left→right and emit.
+	for i := 1; i < len(claimed); i++ {
+		for j := i; j > 0 && claimed[j-1].start > claimed[j].start; j-- {
+			claimed[j-1], claimed[j] = claimed[j], claimed[j-1]
+		}
+	}
+	var b strings.Builder
+	cursor := 0
+	for _, s := range claimed {
+		if cursor < s.start {
+			b.WriteString(name[cursor:s.start])
+		}
+		b.WriteString(m.st.filterHit.Render(name[s.start:s.end]))
+		cursor = s.end
+	}
+	if cursor < len(name) {
+		b.WriteString(name[cursor:])
+	}
+	b.WriteString(pad)
+	return b.String()
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // renderRight draws the value pane with metadata header + pretty value.

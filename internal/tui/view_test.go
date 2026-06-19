@@ -77,6 +77,52 @@ func TestView_TerminalTooSmall(t *testing.T) {
 	}
 }
 
+func TestHighlightFilter_NoNestedEscapes(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m.filter = "b*r"
+	out := m.highlightFilter("bar", 10)
+	// Sanity: padded to width.
+	if len(stripANSI(out)) != 10 {
+		t.Errorf("padded width != 10: %q (visible %q)", out, stripANSI(out))
+	}
+	// No nested escape: at any open ESC[, the *next* control byte before
+	// the close 'm' must not start another ESC[.
+	depth := 0
+	for i := 0; i < len(out); i++ {
+		if i+1 < len(out) && out[i] == 0x1b && out[i+1] == '[' {
+			depth++
+			if depth > 1 {
+				t.Errorf("nested ANSI escape detected at byte %d: %q", i, out)
+				break
+			}
+			continue
+		}
+		if depth > 0 && out[i] == 'm' {
+			depth--
+		}
+	}
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for i := 0; i < len(s); i++ {
+		if !inEsc && i+1 < len(s) && s[i] == 0x1b && s[i+1] == '[' {
+			inEsc = true
+			i++
+			continue
+		}
+		if inEsc {
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 func TestView_BreakpointTransitions(t *testing.T) {
 	cases := []struct {
 		w, h int
