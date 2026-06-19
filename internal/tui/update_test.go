@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -208,6 +209,57 @@ func TestEscFromInputModeReturnsToNormal(t *testing.T) {
 	m, _ = runMsg(m, keyMsg("esc"))
 	if m.ModeNow() != ModeNormal {
 		t.Fatalf("esc should drop to Normal, got %v", m.ModeNow())
+	}
+}
+
+func TestRefreshMsg_StaleGenIgnored(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m.height, m.width = 20, 100
+	// Seed with gen=1.
+	m, _ = runMsg(m, refreshMsg{
+		keys: []KeyInfo{{Name: "a"}, {Name: "b"}}, dbsize: 2, gen: 1,
+	})
+	if len(m.Keys()) != 2 {
+		t.Fatalf("seed not applied: %+v", m.Keys())
+	}
+	// Schedule a new fetch (bumps to gen=2), then deliver a stale gen=1 reply.
+	m, _ = m.scheduleFetch()
+	m, _ = runMsg(m, refreshMsg{
+		keys: []KeyInfo{{Name: "z"}}, dbsize: 99, gen: 1,
+	})
+	if len(m.Keys()) != 2 || m.status.DBSize != 2 {
+		t.Errorf("stale gen=1 reply should be dropped; keys=%v dbsize=%d",
+			m.Keys(), m.status.DBSize)
+	}
+	// Current gen reply lands.
+	m, _ = runMsg(m, refreshMsg{
+		keys: []KeyInfo{{Name: "z"}}, dbsize: 99, gen: m.fetchGen,
+	})
+	if len(m.Keys()) != 1 || m.Keys()[0].Name != "z" {
+		t.Errorf("current gen reply should land; got %+v", m.Keys())
+	}
+}
+
+func TestRefreshMsg_ErrClearsValueState(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m.height, m.width = 20, 100
+	// Populate, including a fetched value.
+	m, _ = runMsg(m, refreshMsg{
+		keys: []KeyInfo{{Name: "k"}}, dbsize: 1,
+		value:  resp.Bulk([]byte("hi")),
+		hasVal: true, gen: 1,
+	})
+	if !m.hasVal {
+		t.Fatalf("expected hasVal=true after seed")
+	}
+	// A later refresh fails — stale value must be cleared and banner stamped.
+	m, _ = m.scheduleFetch()
+	m, _ = runMsg(m, refreshMsg{err: "ERR boom", gen: m.fetchGen})
+	if m.hasVal {
+		t.Errorf("hasVal should be cleared on refresh error")
+	}
+	if !strings.Contains(m.LastErr(), "refresh:") {
+		t.Errorf("err banner missing 'refresh:' prefix: %q", m.LastErr())
 	}
 }
 

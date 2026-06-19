@@ -103,7 +103,8 @@ type Model struct {
 	showHelp bool
 	st       styles
 
-	tickN uint64 // incremented every tickMsg; used to filter stale refreshes
+	tickN    uint64 // incremented every tickMsg; used to filter stale refreshes
+	fetchGen uint64 // bumped before scheduling a fetch; replies with older gen are dropped
 }
 
 // NewModel constructs a fresh model bound to client and refresh interval.
@@ -113,13 +114,14 @@ func NewModel(client Doer, addr string, refresh time.Duration, fsyncLabel string
 	ti.CharLimit = 0
 
 	return Model{
-		client:  client,
-		refresh: refresh,
-		input:   ti,
-		mode:    ModeNormal,
-		status:  StatusLine{Addr: addr, FsyncLabel: fsyncLabel},
-		focus:   FocusLeft,
-		st:      newStyles(noColorEnv()),
+		client:   client,
+		refresh:  refresh,
+		input:    ti,
+		mode:     ModeNormal,
+		status:   StatusLine{Addr: addr, FsyncLabel: fsyncLabel},
+		focus:    FocusLeft,
+		st:       newStyles(noColorEnv()),
+		fetchGen: 1, // first Init() refresh inherits gen=1; bumps happen on every scheduleFetch.
 	}
 }
 
