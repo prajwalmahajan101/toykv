@@ -28,17 +28,22 @@ func (m Model) View() string {
 	header := m.renderHeader()
 	footer := renderFooter(m.st, m.width)
 
-	// Reserve rows for header, status, footer; conditionally for error and prompt.
+	// When the help overlay is up it supersedes the err/prompt chrome rows
+	// — the overlay area must match the height the renderer reserves for
+	// it, otherwise lipgloss.Place centres into a smaller-than-expected
+	// box and the layout drifts.
 	overhead := 1 /*header*/ + 1 /*status*/ + 1 /*footer*/
 	errLine := ""
 	promptLine := ""
-	if m.err != "" {
-		errLine = m.st.errBanner.Render("[!] " + m.err)
-		overhead++
-	}
-	if m.prompt != "" {
-		promptLine = m.st.promptMark.Render(m.prompt) + m.input.View()
-		overhead++
+	if !m.showHelp {
+		if m.err != "" {
+			errLine = m.st.errBanner.Render("[!] " + m.err)
+			overhead++
+		}
+		if m.prompt != "" {
+			promptLine = m.st.promptMark.Render(m.prompt) + m.input.View()
+			overhead++
+		}
 	}
 	bodyH := m.height - overhead
 	if bodyH < 3 {
@@ -46,16 +51,14 @@ func (m Model) View() string {
 	}
 
 	var body string
-	if m.breakpoint() == LayoutStack {
+	if m.showHelp {
+		body = renderHelp(m.st, m.width, bodyH)
+	} else if m.breakpoint() == LayoutStack {
 		body = m.renderStacked(m.width, bodyH)
 	} else {
 		left := m.renderLeft(m.leftWidth(), bodyH)
 		right := m.renderRight(m.rightWidth(), bodyH)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-	}
-
-	if m.showHelp {
-		body = renderHelp(m.st, m.width, bodyH)
 	}
 
 	pieces := []string{header, body, m.renderStatus()}

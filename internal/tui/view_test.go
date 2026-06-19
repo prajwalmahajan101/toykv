@@ -69,6 +69,31 @@ func TestView_HelpOverlay(t *testing.T) {
 	}
 }
 
+func TestView_HelpOverlaySupersedesErrAndPrompt(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m, _ = runMsg(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, _ = runMsg(m, refreshMsg{keys: []KeyInfo{{Name: "k"}}})
+	// Trigger an error banner.
+	m, _ = runMsg(m, replyMsg{err: "boom"})
+	if !strings.Contains(m.View(), "boom") {
+		t.Fatalf("setup: error banner expected before help opens")
+	}
+	// Open help — overlay should hide both banner and any prompt.
+	m, _ = runMsg(m, keyMsg("?"))
+	out := m.View()
+	if strings.Contains(out, "boom") {
+		t.Errorf("help overlay must hide the error banner while open\n%s", out)
+	}
+	if !strings.Contains(out, "toykv-tui · keybindings") {
+		t.Errorf("help overlay title missing\n%s", out)
+	}
+	// Dismiss — banner returns.
+	m, _ = runMsg(m, keyMsg("?"))
+	if !strings.Contains(m.View(), "boom") {
+		t.Errorf("error banner should return after help dismissed")
+	}
+}
+
 func TestView_TerminalTooSmall(t *testing.T) {
 	m := NewModel(newFake(), ":6390", 2*time.Second, "")
 	m, _ = runMsg(m, tea.WindowSizeMsg{Width: 40, Height: 10})
