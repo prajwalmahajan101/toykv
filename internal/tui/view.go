@@ -94,9 +94,9 @@ func (m Model) renderHeader() string {
 			m.st.statusKey.Render("fsync=")+m.st.statusVal.Render(m.status.FsyncLabel))
 	}
 	parts = append(parts,
-		m.st.statusKey.Render("lat=")+m.st.statusVal.Render(formatLatency(m.status.Latency)))
-	parts = append(parts,
-		m.st.statusKey.Render("dbsize=")+m.st.statusVal.Render(fmt.Sprintf("%d", m.status.DBSize)))
+		m.st.statusKey.Render("lat=")+m.st.statusVal.Render(formatLatency(m.status.Latency)),
+		m.st.statusKey.Render("dbsize=")+m.st.statusVal.Render(fmt.Sprintf("%d", m.status.DBSize)),
+	)
 	line := strings.Join(parts, "  ·  ")
 	return lipgloss.NewStyle().Width(m.width).Render(line)
 }
