@@ -110,10 +110,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Help overlay swallows nav keys until dismissed.
+	// Help overlay: q (and Ctrl+C) always quit the app — Esc / ? only
+	// dismiss the overlay. The universal "quit" reflex must work even
+	// with help open.
 	if m.showHelp {
 		switch msg.String() {
-		case "?", "esc", "q":
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "?", "esc":
 			m.showHelp = false
 		}
 		return m, nil
