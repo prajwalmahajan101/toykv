@@ -125,10 +125,16 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 		return m, nil
 	case "tab":
-		if m.focus == FocusLeft {
-			m.focus = FocusRight
-		} else {
-			m.focus = FocusLeft
+		// Focus is only meaningful in the stacked layout where the value
+		// pane occupies its own row and j/k scrolls it. In two-pane modes
+		// the right pane is read-only — toggling focus only repainted the
+		// border accent, an empty affordance.
+		if m.breakpoint() == LayoutStack {
+			if m.focus == FocusLeft {
+				m.focus = FocusRight
+			} else {
+				m.focus = FocusLeft
+			}
 		}
 		return m, nil
 	case "g":
@@ -148,18 +154,30 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "j", "down":
+		if m.breakpoint() == LayoutStack && m.focus == FocusRight {
+			m.valueScroll++
+			return m, nil
+		}
 		if m.cursor < len(m.keys)-1 {
 			m.cursor++
 			m.focused = m.keys[m.cursor].Name
 			m.hasVal = false
+			m.valueScroll = 0
 			return m.scheduleFetch()
 		}
 		return m, nil
 	case "k", "up":
+		if m.breakpoint() == LayoutStack && m.focus == FocusRight {
+			if m.valueScroll > 0 {
+				m.valueScroll--
+			}
+			return m, nil
+		}
 		if m.cursor > 0 {
 			m.cursor--
 			m.focused = m.keys[m.cursor].Name
 			m.hasVal = false
+			m.valueScroll = 0
 			return m.scheduleFetch()
 		}
 		return m, nil

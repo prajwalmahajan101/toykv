@@ -313,7 +313,17 @@ func (m Model) renderRight(w, h int) string {
 	if !m.hasVal {
 		b.WriteString(m.st.muted.Render("(loading…)"))
 	} else {
-		b.WriteString(m.colorizePretty(respfmt.PrettyString(m.value)))
+		pretty := m.colorizePretty(respfmt.PrettyString(m.value))
+		if m.valueScroll > 0 {
+			lines := strings.Split(pretty, "\n")
+			if m.valueScroll >= len(lines) {
+				lines = nil
+			} else {
+				lines = lines[m.valueScroll:]
+			}
+			pretty = strings.Join(lines, "\n")
+		}
+		b.WriteString(pretty)
 	}
 
 	return m.pane(b.String(), w, h, m.focus == FocusRight)

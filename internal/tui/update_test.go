@@ -212,6 +212,41 @@ func TestEscFromInputModeReturnsToNormal(t *testing.T) {
 	}
 }
 
+func TestTab_NoOpOutsideStackLayout(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m.width, m.height = 100, 30 // LayoutMid
+	if got := m.breakpoint(); got != LayoutMid {
+		t.Fatalf("expected LayoutMid at 100x30, got %v", got)
+	}
+	before := m.focus
+	m, _ = runMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.focus != before {
+		t.Errorf("Tab must be no-op outside LayoutStack; focus changed %v→%v", before, m.focus)
+	}
+}
+
+func TestTab_StackTogglesFocusAndJScrolls(t *testing.T) {
+	m := NewModel(newFake(), ":6390", 2*time.Second, "")
+	m.width, m.height = 70, 20 // LayoutStack
+	if got := m.breakpoint(); got != LayoutStack {
+		t.Fatalf("expected LayoutStack at 70x20, got %v", got)
+	}
+	m, _ = runMsg(m, refreshMsg{keys: []KeyInfo{{Name: "k"}}})
+	m, _ = runMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.focus != FocusRight {
+		t.Fatalf("Tab in Stack should focus right, got %v", m.focus)
+	}
+	// j now scrolls the value pane rather than moving the cursor.
+	m, _ = runMsg(m, keyMsg("j"))
+	if m.valueScroll != 1 {
+		t.Errorf("j in Stack+FocusRight should increment valueScroll; got %d", m.valueScroll)
+	}
+	m, _ = runMsg(m, keyMsg("k"))
+	if m.valueScroll != 0 {
+		t.Errorf("k in Stack+FocusRight should decrement valueScroll; got %d", m.valueScroll)
+	}
+}
+
 func TestRefreshMsg_StaleGenIgnored(t *testing.T) {
 	m := NewModel(newFake(), ":6390", 2*time.Second, "")
 	m.height, m.width = 20, 100
