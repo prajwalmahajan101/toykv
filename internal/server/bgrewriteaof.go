@@ -50,14 +50,40 @@ func (s *Server) runRewrite() {
 }
 
 // snapshotForRewrite bridges Store.Snapshot to the rewriter's expected
-// []aof.SnapshotCmd. It uses renderCanonicalSet so the rewritten file
-// is byte-identical to what a live SET sequence would produce.
+// []aof.SnapshotCmd. Each key becomes one canonical record:
+//
+//	string → SET k v [PXAT ms]        (renderCanonicalSet, as in v1/v2)
+//	list   → RPUSH k e1 … eN          (front-to-back preserves order)
+//	hash   → HSET k f1 v1 … fN vN
+//
+// Lists and hashes carry TTL as a follow-up PEXPIREAT record — their
+// creation commands have no expiry clause (unlike SET's PXAT), and
+// PEXPIREAT is already the canonical TTL form on the live path
+// (ADR-0004).
 func (s *Server) snapshotForRewrite() []aof.SnapshotCmd {
 	entries := s.store.Snapshot()
 	out := make([]aof.SnapshotCmd, 0, len(entries))
 	for _, e := range entries {
-		argv := renderCanonicalSet([]byte(e.Key), e.Value, e.ExpireAt)
-		out = append(out, aof.SnapshotCmd{Argv: argv})
+		switch e.Type {
+		case "list":
+			argv := make([][]byte, 0, 2+len(e.List))
+			argv = append(argv, []byte("RPUSH"), []byte(e.Key))
+			argv = append(argv, e.List...)
+			out = append(out, aof.SnapshotCmd{Argv: argv})
+		case "hash":
+			argv := make([][]byte, 0, 2+2*len(e.Hash))
+			argv = append(argv, []byte("HSET"), []byte(e.Key))
+			for f, v := range e.Hash {
+				argv = append(argv, []byte(f), v)
+			}
+			out = append(out, aof.SnapshotCmd{Argv: argv})
+		default: // "string"
+			out = append(out, aof.SnapshotCmd{Argv: renderCanonicalSet([]byte(e.Key), e.Value, e.ExpireAt)})
+			continue // TTL already encoded via PXAT
+		}
+		if !e.ExpireAt.IsZero() {
+			out = append(out, aof.SnapshotCmd{Argv: renderPExpireAt([]byte(e.Key), e.ExpireAt)})
+		}
 	}
 	return out
 }
