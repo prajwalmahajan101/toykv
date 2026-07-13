@@ -56,7 +56,7 @@ func TestSnapshot_ValueIsCopy(t *testing.T) {
 
 	// Mutating the returned slice must not affect the store.
 	got[0].Value[0] = 'X'
-	v, ok := s.Get("k")
+	v, ok, _ := s.Get("k")
 	if !ok || !bytes.Equal(v, []byte("hello")) {
 		t.Errorf("after mutating Snapshot result, Get(k) = %q ok=%v, want \"hello\" true", v, ok)
 	}

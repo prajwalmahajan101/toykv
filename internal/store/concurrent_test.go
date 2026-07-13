@@ -34,7 +34,7 @@ func TestIncrConcurrentExact(t *testing.T) {
 	}
 	wg.Wait()
 
-	got, ok := s.Get("k")
+	got, ok, _ := s.Get("k")
 	if !ok {
 		t.Fatal("key missing after concurrent INCR")
 	}
@@ -123,7 +123,7 @@ func TestTTL_LockUpgradeRace_NoSpuriousMiss(t *testing.T) {
 				// guaranteed to reflect at least that Set when Get
 				// runs.
 				loaded := lastExpireAtNano.Load()
-				_, ok := s.Get(key)
+				_, ok, _ := s.Get(key)
 				// Capture AFTER Get: upper-bounds Get's internal
 				// time check.
 				tAfter := time.Now()
@@ -173,7 +173,7 @@ func TestMixedConcurrentReadWrite(t *testing.T) {
 			for i := 0; i < iters; i++ {
 				switch i % 8 {
 				case 0:
-					_, _ = s.Get(key)
+					_, _, _ = s.Get(key)
 				case 1:
 					s.Set(key, []byte("v"), SetOpts{})
 				case 2:

@@ -69,24 +69,29 @@ func NewWithClock(now func() time.Time) *Store {
 	}
 }
 
-// Get returns the value stored under k. The returned slice is owned by
-// the store; callers MUST NOT mutate it.
+// Get returns the string value stored under k. The returned slice is
+// owned by the store; callers MUST NOT mutate it. Returns ErrWrongType
+// when the key holds a non-string value (list / hash).
 //
 // Lazy expiry: if the entry has expired, Get evicts it and returns a
 // miss. The lock-upgrade window (RLock → release → Lock → re-check) is
 // the documented LLD §3.2 trade-off; the re-check protects against a
 // concurrent Set that refreshes the entry before we re-acquire.
-func (s *Store) Get(k string) ([]byte, bool) {
+func (s *Store) Get(k string) ([]byte, bool, error) {
 	s.mu.RLock()
 	e, ok := s.data[k]
 	if !ok {
 		s.mu.RUnlock()
-		return nil, false
+		return nil, false, nil
 	}
 	if !e.expired(s.nowFunc()) {
-		v := e.value
+		if e.typ != typeString {
+			s.mu.RUnlock()
+			return nil, false, ErrWrongType
+		}
+		v := e.str
 		s.mu.RUnlock()
-		return v, true
+		return v, true, nil
 	}
 	s.mu.RUnlock()
 
@@ -94,13 +99,16 @@ func (s *Store) Get(k string) ([]byte, bool) {
 	defer s.mu.Unlock()
 	e, ok = s.data[k]
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	if e.expired(s.nowFunc()) {
 		delete(s.data, k)
-		return nil, false
+		return nil, false, nil
 	}
-	return e.value, true
+	if e.typ != typeString {
+		return nil, false, ErrWrongType
+	}
+	return e.str, true, nil
 }
 
 // Exists returns the number of supplied keys that are present and not
@@ -184,7 +192,9 @@ func (s *Store) Set(k string, v []byte, opts SetOpts) bool {
 	}
 	cp := make([]byte, len(v))
 	copy(cp, v)
-	s.data[k] = entry{value: cp, expireAt: opts.ExpireAt}
+	// SET overwrites regardless of the existing value's type (Redis
+	// semantics) — the whole entry is replaced, dropping any list/hash.
+	s.data[k] = entry{typ: typeString, str: cp, expireAt: opts.ExpireAt}
 	return true
 }
 
@@ -291,7 +301,10 @@ func (s *Store) incrBy(k string, delta int64) (int64, error) {
 		if e.expired(now) {
 			delete(s.data, k)
 		} else {
-			parsed, err := strconv.ParseInt(string(e.value), 10, 64)
+			if e.typ != typeString {
+				return 0, ErrWrongType
+			}
+			parsed, err := strconv.ParseInt(string(e.str), 10, 64)
 			if err != nil {
 				return 0, ErrNotInteger
 			}
@@ -302,15 +315,20 @@ func (s *Store) incrBy(k string, delta int64) (int64, error) {
 		return 0, ErrOverflow
 	}
 	n += delta
-	s.data[k] = entry{value: []byte(strconv.FormatInt(n, 10))}
+	s.data[k] = entry{typ: typeString, str: []byte(strconv.FormatInt(n, 10))}
 	return n, nil
 }
 
-// SnapshotEntry is one live key's payload returned by Snapshot. Value
-// is a fresh copy owned by the caller. A zero ExpireAt means no expiry.
+// SnapshotEntry is one live key's payload returned by Snapshot. Exactly
+// one of Value / List / Hash is populated according to Type ("string",
+// "list", "hash"). All payloads are fresh copies owned by the caller.
+// A zero ExpireAt means no expiry.
 type SnapshotEntry struct {
 	Key      string
-	Value    []byte
+	Type     string
+	Value    []byte            // Type == "string"
+	List     [][]byte          // Type == "list", front to back
+	Hash     map[string][]byte // Type == "hash"
 	ExpireAt time.Time
 }
 
@@ -329,9 +347,22 @@ func (s *Store) Snapshot() []SnapshotEntry {
 			delete(s.data, k)
 			continue
 		}
-		cp := make([]byte, len(e.value))
-		copy(cp, e.value)
-		out = append(out, SnapshotEntry{Key: k, Value: cp, ExpireAt: e.expireAt})
+		se := SnapshotEntry{Key: k, Type: e.typ.String(), ExpireAt: e.expireAt}
+		switch e.typ {
+		case typeString:
+			se.Value = append([]byte(nil), e.str...)
+		case typeList:
+			se.List = make([][]byte, 0, e.list.len())
+			for _, v := range e.list.rng(0, -1) {
+				se.List = append(se.List, append([]byte(nil), v...))
+			}
+		case typeHash:
+			se.Hash = make(map[string][]byte, len(e.hash))
+			for f, v := range e.hash {
+				se.Hash[f] = append([]byte(nil), v...)
+			}
+		}
+		out = append(out, se)
 	}
 	return out
 }

@@ -51,11 +51,20 @@ func cmdEcho(_ *Server, _ *connState, argv [][]byte) resp.Value {
 // downgrades it to `$-1` for RESP2, so RESP2 replies stay byte-identical
 // to v1 (ADR-0011).
 func cmdGet(s *Server, _ *connState, argv [][]byte) resp.Value {
-	v, ok := s.store.Get(string(argv[1]))
+	v, ok, err := s.store.Get(string(argv[1]))
+	if errors.Is(err, store.ErrWrongType) {
+		return wrongTypeErr()
+	}
 	if !ok {
 		return resp.Null()
 	}
 	return resp.Bulk(v)
+}
+
+// wrongTypeErr is the byte-exact Redis -WRONGTYPE reply, shared by
+// every typed command path.
+func wrongTypeErr() resp.Value {
+	return resp.Error("WRONGTYPE Operation against a key holding the wrong kind of value")
 }
 
 // cmdSet implements SET key value [NX|XX] [EX seconds | PX milliseconds
@@ -217,6 +226,8 @@ func incrDecr(s *Server, argv [][]byte, up bool) resp.Value {
 		n, err = s.store.Decr(string(argv[1]))
 	}
 	switch {
+	case errors.Is(err, store.ErrWrongType):
+		return wrongTypeErr()
 	case errors.Is(err, store.ErrNotInteger):
 		return resp.Error("ERR value is not an integer or out of range")
 	case errors.Is(err, store.ErrOverflow):
