@@ -142,9 +142,14 @@ import (
     "time"
 )
 
+type valueType byte // typeString | typeList | typeHash
+
 type entry struct {
-    value    []byte
-    expireAt time.Time // zero ⇒ no expiry
+    typ      valueType
+    str      []byte            // typeString
+    list     *deque            // typeList — growable ring buffer, O(1) both ends
+    hash     map[string][]byte // typeHash
+    expireAt time.Time         // zero ⇒ no expiry; uniform across types
 }
 
 type Store struct {
@@ -157,7 +162,7 @@ func New() *Store
 func NewWithClock(now func() time.Time) *Store
 ```
 
-Strict `[]byte` value for v1. (LLD-level decision matches PRD §5.2 and the design call documented in this session — defer typed values to v2.)
+v1 shipped a strict `[]byte` value (`entry{value, expireAt}`); M11 turned the entry into the tagged union above. Rules (Redis parity): `SET` overwrites any type; `GET`/`INCR`/`DECR` on a non-string return `ErrWrongType` (wire: `-WRONGTYPE …`); `DEL`/`EXISTS`/`EXPIRE`/`TTL`/`PERSIST`/`KEYS` are type-agnostic; a list/hash emptied by its last `LPop`/`RPop`/`HDel` deletes the key — empty collections never exist. Lists are backed by a growable ring-buffer deque so `LPUSH` is O(1) (a slice would make left-heavy AOF replay quadratic).
 
 ### 3.2 Operations
 
@@ -231,14 +236,20 @@ Algorithm matches Redis's "expire random sample" — sample 20 keys per tick, ev
 │    version = 0x02            (1 byte, inside)│
 │                                              │
 │  Actually: 7-byte magic + 1-byte version     │
-│    "TOYKV"  + 0x00 + 0x00 + 0x02             │
+│    "TOYKV"  + 0x00 + 0x00 + 0x03             │
 │                                              │
 │  Padded to 8 bytes for alignment.            │
 │                                              │
-│  Supported versions on read: {0x01, 0x02}.   │
-│  v1 files (pre-M4) replay cleanly on v2+.    │
+│  Supported versions on read: {0x01, 0x02,    │
+│  0x03}. v1 files (pre-M4) replay cleanly.    │
 │  v2 introduces SET ... PXAT, PEXPIREAT,      │
 │  PERSIST records — see ADR-0004.             │
+│  v3 (M11) adds typed records — LPUSH/RPUSH/  │
+│  LPOP/RPOP/HSET/HDEL. Open() upgrades an     │
+│  older file's version byte in place (pwrite  │
+│  at offset 7 + fsync) before appending, so   │
+│  header version >= newest record format in   │
+│  the file at every instant.                  │
 └──────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────┐
 │  records (repeated):                         │
