@@ -12,7 +12,20 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ### Added
 
+- RESP3 wire upgrade, opt-in via `HELLO [protover [AUTH user pass]]`;
+  per-connection protocol state defaults to RESP2 (M10, tag `m10`).
+- RESP3 encoder set in `internal/resp`: `%` map, `~` set, `,` double,
+  `#` boolean, `_` null, `=` verbatim, `>` push. A protocol-aware writer
+  emits native RESP3 frames to a `HELLO 3` client and downgrades each to
+  its RESP2 equivalent at a single point, so RESP2 clients (incl.
+  `redis-cli` default) are unaffected — see
+  [ADR-0011](./docs/adr/0011-resp3-negotiation-and-protocol-state.md).
+
 ### Changed
+
+- `GET` misses and failed `SET NX/XX` now reply with the RESP3 null (`_`)
+  to a RESP3 client; RESP2 clients still receive `$-1`, byte-identical to
+  v1.
 
 ### Fixed
 
