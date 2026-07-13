@@ -3,6 +3,7 @@ package resp
 import (
 	"bytes"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -28,21 +29,87 @@ func TestWriter_WriteFrame_Golden(t *testing.T) {
 			"*3\r\n:1\r\n+two\r\n$5\r\nthree\r\n"},
 		{"ok-shortcut", OK(), "+OK\r\n"},
 	}
+	// The default WriteFrame is RESP2; every golden must also hold when the
+	// proto-aware entry point is called with Proto2 (the AOF/client path
+	// and the RESP2-client reply path must agree byte-for-byte).
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			w := NewWriter(&buf)
-			if err := w.WriteFrame(tc.in); err != nil {
-				t.Fatalf("WriteFrame: %v", err)
+			if got := encode(t, tc.in); got != tc.want {
+				t.Fatalf("WriteFrame: got %q, want %q", got, tc.want)
 			}
-			if err := w.Flush(); err != nil {
-				t.Fatalf("Flush: %v", err)
-			}
-			if got := buf.String(); got != tc.want {
-				t.Fatalf("got %q, want %q", got, tc.want)
+			if got := encodeProto(t, tc.in, Proto2); got != tc.want {
+				t.Fatalf("WriteFrameProto(Proto2): got %q, want %q", got, tc.want)
 			}
 		})
 	}
+}
+
+// TestWriter_RESP3_Golden pins the native RESP3 encoding of each new kind
+// (Proto3) and its RESP2 downgrade (Proto2). The Proto2 column is the
+// contract the dual-protocol compat sweep relies on: a handler may return
+// a rich kind and a RESP2 client still sees the legacy shape.
+func TestWriter_RESP3_Golden(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         Value
+		wantProto3 string
+		wantProto2 string
+	}{
+		{"null", Null(), "_\r\n", "$-1\r\n"},
+		{"bool-true", Boolean(true), "#t\r\n", ":1\r\n"},
+		{"bool-false", Boolean(false), "#f\r\n", ":0\r\n"},
+		{"double-int", Double(3), ",3\r\n", "$1\r\n3\r\n"},
+		{"double-frac", Double(3.5), ",3.5\r\n", "$3\r\n3.5\r\n"},
+		{"double-neg", Double(-0.25), ",-0.25\r\n", "$5\r\n-0.25\r\n"},
+		{"double-inf", Double(math.Inf(1)), ",inf\r\n", "$3\r\ninf\r\n"},
+		{"double-ninf", Double(math.Inf(-1)), ",-inf\r\n", "$4\r\n-inf\r\n"},
+		{"double-nan", Double(math.NaN()), ",nan\r\n", "$3\r\nnan\r\n"},
+		{"verbatim", Verbatim("txt", []byte("hi")),
+			"=6\r\ntxt:hi\r\n", "$2\r\nhi\r\n"},
+		{"set", Set(Int(1), Int(2)),
+			"~2\r\n:1\r\n:2\r\n", "*2\r\n:1\r\n:2\r\n"},
+		{"push", Push(String("message"), Bulk([]byte("ch"))),
+			">2\r\n+message\r\n$2\r\nch\r\n", "*2\r\n+message\r\n$2\r\nch\r\n"},
+		{"map", Map(Bulk([]byte("k")), Int(1), Bulk([]byte("j")), Null()),
+			"%2\r\n$1\r\nk\r\n:1\r\n$1\r\nj\r\n_\r\n",
+			"*4\r\n$1\r\nk\r\n:1\r\n$1\r\nj\r\n$-1\r\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := encodeProto(t, tc.in, Proto3); got != tc.wantProto3 {
+				t.Fatalf("Proto3: got %q, want %q", got, tc.wantProto3)
+			}
+			if got := encodeProto(t, tc.in, Proto2); got != tc.wantProto2 {
+				t.Fatalf("Proto2: got %q, want %q", got, tc.wantProto2)
+			}
+		})
+	}
+}
+
+func encode(t *testing.T, v Value) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.WriteFrame(v); err != nil {
+		t.Fatalf("WriteFrame: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	return buf.String()
+}
+
+func encodeProto(t *testing.T, v Value, p Proto) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.WriteFrameProto(v, p); err != nil {
+		t.Fatalf("WriteFrameProto: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	return buf.String()
 }
 
 func TestWriter_UnknownKind(t *testing.T) {
@@ -51,6 +118,16 @@ func TestWriter_UnknownKind(t *testing.T) {
 	err := w.WriteFrame(Value{Kind: '?'})
 	if err == nil {
 		t.Fatal("want error for unknown kind, got nil")
+	}
+}
+
+func TestWriter_VerbatimBadFormat(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	// A non-3-char format tag is a programming error and must be rejected
+	// at Proto3 (Proto2 ignores the tag entirely).
+	if err := w.WriteFrameProto(Verbatim("toolong", []byte("x")), Proto3); err == nil {
+		t.Fatal("want error for bad verbatim format, got nil")
 	}
 }
 
