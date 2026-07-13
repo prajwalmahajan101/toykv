@@ -312,15 +312,21 @@ func applyExpire(s *Server, key []byte, expireAt time.Time) resp.Value {
 	if !s.store.Expire(string(key), expireAt) {
 		return resp.Int(0)
 	}
-	canonical := [][]byte{
+	if err := s.appendIfLive(renderPExpireAt(key, expireAt)); err != nil {
+		return resp.Error("ERR aof append failed")
+	}
+	return resp.Int(1)
+}
+
+// renderPExpireAt builds the canonical absolute-TTL record. Shared by
+// the live EXPIRE family and the BGREWRITEAOF snapshot path for typed
+// keys, so both emit byte-identical records (ADR-0004).
+func renderPExpireAt(key []byte, expireAt time.Time) [][]byte {
+	return [][]byte{
 		[]byte("PEXPIREAT"),
 		key,
 		[]byte(strconv.FormatInt(expireAt.UnixMilli(), 10)),
 	}
-	if err := s.appendIfLive(canonical); err != nil {
-		return resp.Error("ERR aof append failed")
-	}
-	return resp.Int(1)
 }
 
 // cmdTTL returns remaining TTL in seconds. -2 for missing/expired, -1
