@@ -131,11 +131,24 @@ func Open(dir string, policy FsyncPolicy) (*Writer, error) {
 			_ = f.Close()
 			return nil, fmt.Errorf("aof: open for header check %s: %w", path, err)
 		}
-		_, herr := readHeader(rf)
+		ver, herr := readHeader(rf)
 		_ = rf.Close()
 		if herr != nil {
 			_ = f.Close()
 			return nil, herr
+		}
+		if ver < CurrentVersion {
+			// In-place header upgrade (single byte at offset 7) BEFORE
+			// any append, so the invariant "header version >= newest
+			// record format in the file" holds at every instant: once
+			// v3 records can land in this file, an older binary must
+			// refuse it up-front with ErrBadVersion rather than dying
+			// mid-replay on an unknown command. f is O_APPEND (WriteAt
+			// would error), so use a dedicated handle for the pwrite.
+			if err := upgradeHeader(path); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
 		}
 	}
 

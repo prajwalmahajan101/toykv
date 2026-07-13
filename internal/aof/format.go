@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 )
 
 // TmpFilename is the in-progress filename used by the rewriter. It is
@@ -32,15 +33,26 @@ const (
 	// v2 records. See ADR-0004.
 	Version2 byte = 0x02
 
+	// Version3 adds the typed mutating records — LPUSH / RPUSH / LPOP /
+	// RPOP / HSET / HDEL — to the SAME RESP-array record shape (M11).
+	// As with v2 there is no binary change at the record level; the
+	// version byte gates: pre-M11 binaries reject v3 files up-front
+	// (they would not understand LPUSH during replay), and M11+ binaries
+	// accept v1, v2, and v3 records. Open upgrades an older file's
+	// header byte in place before appending, preserving the invariant
+	// that a file's header version >= the newest record format it
+	// contains. See ADR-0012.
+	Version3 byte = 0x03
+
 	// CurrentVersion is the version byte emitted by writeHeader on fresh
-	// AOF files.
-	CurrentVersion = Version2
+	// AOF files, and the byte Open upgrades older headers to.
+	CurrentVersion = Version3
 )
 
 // supportedVersions enumerates the version bytes this binary will
 // replay. Keep the slice sorted ascending — readHeader's error message
 // is more useful when the supported set is predictable.
-var supportedVersions = []byte{Version1, Version2}
+var supportedVersions = []byte{Version1, Version2, Version3}
 
 // Magic is the 7-byte file magic. Padded with NULs so the full header is
 // 8 bytes including the version byte.
@@ -53,6 +65,26 @@ func writeHeader(w io.Writer) error {
 	buf[HeaderLen-1] = CurrentVersion
 	if _, err := w.Write(buf); err != nil {
 		return fmt.Errorf("aof: write header: %w", err)
+	}
+	return nil
+}
+
+// upgradeHeader rewrites the version byte at offset HeaderLen-1 to
+// CurrentVersion and fsyncs. Called by Open when an existing file's
+// header is older than this binary's format — a one-byte, in-place,
+// crash-safe update (a torn single-byte pwrite is impossible on any
+// sane filesystem; pre- and post-states are both valid headers).
+func upgradeHeader(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("aof: open for header upgrade %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteAt([]byte{CurrentVersion}, HeaderLen-1); err != nil {
+		return fmt.Errorf("aof: upgrade header %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("aof: fsync header upgrade %s: %w", path, err)
 	}
 	return nil
 }
