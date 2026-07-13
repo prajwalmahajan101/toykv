@@ -39,7 +39,7 @@ var fakeEpoch = time.Unix(1_700_000_000, 0)
 
 func TestGet_Missing(t *testing.T) {
 	s := New()
-	if v, ok := s.Get("nope"); ok || v != nil {
+	if v, ok, _ := s.Get("nope"); ok || v != nil {
 		t.Fatalf("got (%q,%v), want (nil,false)", v, ok)
 	}
 }
@@ -49,7 +49,7 @@ func TestSet_GetRoundTrip(t *testing.T) {
 	if ok := s.Set("k", []byte("v"), SetOpts{}); !ok {
 		t.Fatal("Set returned false")
 	}
-	got, ok := s.Get("k")
+	got, ok, _ := s.Get("k")
 	if !ok || !bytes.Equal(got, []byte("v")) {
 		t.Fatalf("got (%q,%v), want (\"v\",true)", got, ok)
 	}
@@ -60,7 +60,7 @@ func TestSet_DefensiveCopy(t *testing.T) {
 	v := []byte("hello")
 	s.Set("k", v, SetOpts{})
 	v[0] = 'X' // mutate caller's buffer after Set
-	got, _ := s.Get("k")
+	got, _, _ := s.Get("k")
 	if !bytes.Equal(got, []byte("hello")) {
 		t.Fatalf("got %q, want %q — Set did not take a defensive copy", got, "hello")
 	}
@@ -74,7 +74,7 @@ func TestSet_NX(t *testing.T) {
 	if ok := s.Set("k", []byte("v2"), SetOpts{Mode: SetNX}); ok {
 		t.Fatal("second NX should fail")
 	}
-	got, _ := s.Get("k")
+	got, _, _ := s.Get("k")
 	if !bytes.Equal(got, []byte("v1")) {
 		t.Fatalf("got %q, want %q", got, "v1")
 	}
@@ -89,7 +89,7 @@ func TestSet_XX(t *testing.T) {
 	if ok := s.Set("k", []byte("v2"), SetOpts{Mode: SetXX}); !ok {
 		t.Fatal("XX on existing key should succeed")
 	}
-	got, _ := s.Get("k")
+	got, _, _ := s.Get("k")
 	if !bytes.Equal(got, []byte("v2")) {
 		t.Fatalf("got %q, want %q", got, "v2")
 	}
@@ -135,7 +135,7 @@ func TestFlushDB(t *testing.T) {
 	if n := s.DBSize(); n != 0 {
 		t.Fatalf("dbsize after FlushDB = %d, want 0", n)
 	}
-	if _, ok := s.Get("a"); ok {
+	if _, ok, _ := s.Get("a"); ok {
 		t.Fatal("key still present after FlushDB")
 	}
 }
@@ -248,11 +248,11 @@ func TestGet_LazyExpire_EvictsOnRead(t *testing.T) {
 	s := NewWithClock(fc.now)
 	s.Set("k", []byte("v"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
 
-	if v, ok := s.Get("k"); !ok || !bytes.Equal(v, []byte("v")) {
+	if v, ok, _ := s.Get("k"); !ok || !bytes.Equal(v, []byte("v")) {
 		t.Fatalf("pre-expiry got (%q,%v), want (v,true)", v, ok)
 	}
 	fc.advance(2 * time.Second)
-	if v, ok := s.Get("k"); ok || v != nil {
+	if v, ok, _ := s.Get("k"); ok || v != nil {
 		t.Fatalf("post-expiry got (%q,%v), want (nil,false)", v, ok)
 	}
 	if n := s.DBSize(); n != 0 {
@@ -293,7 +293,7 @@ func TestExpire_OnExisting(t *testing.T) {
 		t.Fatal("Expire on existing key returned false")
 	}
 	fc.advance(2 * time.Second)
-	if _, ok := s.Get("k"); ok {
+	if _, ok, _ := s.Get("k"); ok {
 		t.Fatal("key should be expired after Expire + clock advance")
 	}
 }
@@ -322,7 +322,7 @@ func TestPersist_RemovesTTL(t *testing.T) {
 		t.Fatal("Persist on TTL'd key returned false")
 	}
 	fc.advance(10 * time.Second)
-	if _, ok := s.Get("k"); !ok {
+	if _, ok, _ := s.Get("k"); !ok {
 		t.Fatal("key should persist after Persist")
 	}
 	if d := s.TTL("k"); d != TTLNoExpire {
@@ -347,7 +347,7 @@ func TestSet_OverwriteWithoutExpireAtClearsTTL(t *testing.T) {
 	s.Set("k", []byte("v1"), SetOpts{ExpireAt: fc.now().Add(time.Second)})
 	s.Set("k", []byte("v2"), SetOpts{}) // no ExpireAt
 	fc.advance(10 * time.Second)
-	v, ok := s.Get("k")
+	v, ok, _ := s.Get("k")
 	if !ok || !bytes.Equal(v, []byte("v2")) {
 		t.Fatalf("got (%q,%v), want (v2,true) — overwrite should clear prior TTL", v, ok)
 	}
@@ -361,7 +361,7 @@ func TestSet_NX_ExpiredCountsAsAbsent(t *testing.T) {
 	if ok := s.Set("k", []byte("v2"), SetOpts{Mode: SetNX}); !ok {
 		t.Fatal("NX should succeed when prior entry is expired")
 	}
-	v, _ := s.Get("k")
+	v, _, _ := s.Get("k")
 	if !bytes.Equal(v, []byte("v2")) {
 		t.Fatalf("got %q, want v2", v)
 	}
