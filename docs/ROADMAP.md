@@ -3,8 +3,11 @@
 Milestone-ordered execution plan to v1.0.0. Each milestone ends at a tagged, demoable state. Branch off `main`; merge via PR; **no direct commits to `main`**.
 
 ```
-M0  Skeleton ──► M1  RESP echo ──► M2  Store core ──► M3  AOF + crash ──► M4  TTL ──►
-M5  Compaction ──► M6  CLI ──► M7  TUI ──► M8  Integration tests ──► M9  Bench + polish ──► v1.0.0
+v1  M0 Skeleton ─► M1 RESP echo ─► M2 Store core ─► M3 AOF + crash ─► M4 TTL ─►
+    M5 Compaction ─► M6 CLI ─► M7 TUI ─► M8 Integration tests ─► M9 Bench + polish ─► v1.0.0
+
+v2  M10 RESP3 ─► M11 Types (lists+hashes, AOF v3) ─► M12 AUTH/TLS ─►
+    M13 INFO + SCAN ─► M14 TUI v2 ─► M15 Bench + polish ─► v2.0.0   (committed — active plan)
 ```
 
 ## Why this order — bottom-up + risk-first
@@ -114,31 +117,104 @@ Two ordering decisions deserve calling out:
 
 ---
 
-## v2.0 — Useful (proposed, not committed)
+## v2.0 — Useful (committed — the active plan post-v1)
 
-Make toykv usable beyond a learning demo. Each feature is self-contained — no single item doubles project scope. Cut a v2 only after v1 sees real use.
+Make toykv usable beyond a learning demo: authenticated, typed, observable, single-node. Same execution discipline as v1 — branch off `main`, merge via PR, **no direct commits to `main`** — and the same governing principle: **the highest-blast-radius surface ships and is crash-tested earliest, and each milestone owns its own risk test.**
 
-| Theme | Feature | Rationale |
+> **Decision recorded 2026-07-13.** v1.0.0 shipped 2026-06-17; after ~4 weeks of real use the trajectory decision (previously deferred) is now made: **run the full M10–M15 arc — Option B (v1 → v2)**. See [Honest framing](#honest-framing--pick-one-trajectory).
+>
+> The honest caveats still stand, subordinate to that commitment: the backlog tracker (`project-todo/projects/toykv.md`) records that a *minimal* v2 is **AUTH + TLS only**, and that **v3 (Raft-distributed) is the real downstream dependency** — blocked on `ToyRaft` shipping as a vendorable library. So if scope tightens mid-cycle, v2 can be trimmed back to M12 (AUTH+TLS) without abandoning the release; and jumping to v3 stays a live option the moment `ToyRaft` is ready.
+
+### Why this order — bottom-up + risk-first (continued)
+
+Numbering continues the single v1 sequence (**M10–M15**); the release tag is `v2.0.0`.
+
+| Risk | Severity | Owned by |
 |---|---|---|
-| Observability | `INFO` command (uptime, dbsize, fsync policy, AOF bytes, replay stats) | Richer TUI status bar; integration tests can introspect server state |
-| Observability | Prometheus `/metrics` endpoint behind `-metrics-addr` flag | Real-world deploys need RED metrics |
-| Wire | `SCAN cursor [MATCH] [COUNT]` | Replaces `KEYS *` in TUI; survives large keyspaces |
+| Tagged-union store model + **AOF v3** replay of typed records (silent corruption of a list/hash on restart) | **Critical** | M11 — crash injection for typed round-trip |
+| `WRONGTYPE` enforcement across every command | High | M11 — same |
+| AOF backward-compat (must replay v1 / v2 / **v3** records) | High | M11 — same |
+| Auth-state leak across connections / partial-auth command execution | High | M12 — concurrent auth stress |
+| TLS handshake + connection drain | Medium | M12 — same |
+| RESP3 downgrade — a RESP2 client's replies must stay byte-identical | Medium | M10 — dual-protocol compat sweep |
+| SCAN cursor stability under concurrent mutation | Medium | M13 — cursor-guarantee stress |
+| `INFO` field correctness | Low | M13 |
+
+Two ordering decisions deserve calling out:
+
+1. **RESP3 (M10) before types (M11).** RESP3 is the wire foundation — additive, low store-blast-radius, opt-in via `HELLO 3`. Building the protocol-negotiation and type-tag plumbing first means types then exercise RESP3's map/set replies (`HGETALL` → map) as a real second use case — the same logic that put AOF before TTL in v1.
+2. **Types (M11) before AUTH (M12).** Types are the highest-blast-radius surface in v2 (store model + AOF format bump), so they ship and get crash-tested early. AUTH/TLS is self-contained connection-layer work that doesn't depend on the type system and can slot in once the risky format change is proven.
+
+---
+
+### M10 — RESP3 wire upgrade
+**Branch:** `feat/resp3` · **Depends on:** nothing new (v1 RESP2 codec) · **ADR:** RESP3 negotiation & per-connection protocol state
+- `HELLO [proto [AUTH user pass]]` for protocol negotiation; per-connection protocol-version state.
+- New RESP3 encoders in `internal/resp/`: `%` map, `~` set, `,` double, `#` boolean, `_` null, `=` verbatim string, `>` push-frame scaffold.
+- Default stays RESP2; RESP3 is opt-in and never sent to a client that hasn't said `HELLO 3`.
+- **Owned risk test:** dual-protocol compat sweep — every command in PRD §5.1 replies byte-identically to a RESP2 client, while a RESP3 client gets the richer frames. RESP2 clients (incl. `redis-cli` default) unaffected.
+- **Exit:** `HELLO 3` upgrades a connection; `redis-cli -3 -p 6390 <cmd>` round-trips; RESP2 golden replies unchanged.
+
+### M11 — Value types: lists + hashes (AOF v3)
+**Branch:** `feat/types` · **Depends on:** M10 (typed replies ride RESP3 map/set frames) · **ADR:** tagged-union store model + AOF v3 format
+*(The highest-blast-radius milestone in v2 — it owns the crash test.)*
+- `internal/store` entry becomes a **tagged union** (string / list / hash) with a type byte.
+- Lists: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `LINDEX`.
+- Hashes: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HKEYS`, `HVALS`, `HLEN`.
+- `TYPE key` — folded in here (practically required once keys are typed; the TUI and `SCAN` both lean on it).
+- `WRONGTYPE` error on any command applied to the wrong value type.
+- **AOF format bumps to v3** — encodes list/hash mutating records; replay accepts **v1, v2, and v3** records (version-byte plumbing, now on its second real exercise after TTL added v2).
+- **Owned risk test:** **crash injection.** Subprocess test — SIGKILL mid-write of list/hash ops, restart, verify every acked typed mutation is present under `appendfsync=always`; partial-tail rejected with offset reported.
+- **Exit:** every list/hash command round-trips via `redis-cli`; `WRONGTYPE` matches Redis; v3 AOF replay reconstructs typed values across crash-restart.
+
+### M12 — AUTH + TLS
+**Branch:** `feat/auth-tls` · **Depends on:** M10 (`HELLO … AUTH` form); otherwise self-contained connection-layer work · **ADR:** AUTH model + TLS termination
+- `requirepass` flag + `AUTH password` (and the `HELLO 3 AUTH user pass` form from M10).
+- TLS via stdlib `crypto/tls` behind `-tls-cert` / `-tls-key`; wraps the accept loop, drains cleanly.
+- Command gating: an unauthenticated connection may run only `AUTH`, `HELLO`, and `PING`; everything else returns `-NOAUTH`.
+- **Owned risk test:** concurrent auth stress — N connections racing `AUTH` + commands; no auth-state bleed across goroutines, no command executes before its connection authenticates.
+- **Exit:** `redis-cli -a <pass>` authenticates and round-trips; wrong/absent password rejected; `redis-cli --tls --cert … --key …` completes a TLS handshake and round-trips.
+
+### M13 — INFO + SCAN
+**Branch:** `feat/info-scan` · **Depends on:** M11 (`SCAN` iterates the typed keyspace; `TYPE` per key) + M10 (`INFO` as RESP3 map) · **ADR:** none new — reuses RESP3 (M10) and store (M11) decisions
+- `INFO` — uptime, `dbsize`, `appendfsync` policy, AOF byte size, replay stats; served as a RESP3 map when the client is on RESP3, a bulk string on RESP2.
+- `SCAN cursor [MATCH pattern] [COUNT n]` — cursor-based iteration over the (now typed) keyspace; replaces `KEYS *` for large keyspaces.
+- **Owned risk test:** cursor-guarantee stress — a full `SCAN` loop under concurrent writes returns every key that was present for the entire scan (Redis's SCAN guarantee), with no crash on a stale cursor.
+- **Exit:** `INFO` fields match live server state; a `SCAN` loop enumerates the full keyspace; integration tests introspect server state via `INFO`.
+
+### M14 — TUI v2
+**Branch:** `feat/tui-v2` · **Depends on:** M11 (`TYPE` views), M12 (AUTH prompt), M13 (`SCAN` paging + `INFO` status bar) · **ADR:** none new — consumes M11–M13 surfaces
+- Multi-type rendering in the value pane: distinct string / list / hash views driven by `TYPE`.
+- `SCAN`-backed paging in the keys pane — removes the v1 large-keyspace caveat.
+- AUTH prompt on connect when the server has `requirepass`; INFO-driven status bar (fsync policy, dbsize, uptime).
+- Lands on proven plumbing — same `internal/client` package, extended for the new commands (v1's CLI-before-TUI logic).
+- **Owned risk test:** `teatest` smoke per type view + a paging scenario against a running server.
+- **Exit:** the TUI renders every value type and pages a large keyspace; all v1 keybindings still pass.
+
+### M15 — Bench + polish + v2.0.0
+**Branch:** `feat/release-v2` · **Depends on:** M10–M14 all merged
+- Re-run `make bench` with typed workloads; README records the new numbers.
+- README + [SECURITY](./SECURITY.md) update — auth/TLS lifts the localhost-only ceiling; document the new posture.
+- PRD / HLD / LLD deltas for types, RESP3, and auth.
+- ADR reconciliation: the four v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS) are each written **after** their owning milestone merges (M10/M11/M12) per [`docs/adr/README.md`](./adr/README.md); M15 only verifies all four have landed and the index is current — it does not batch-write them at release time.
+- Goreleaser reused from v1; tag `v2.0.0`.
+
+### v2.x backlog (not in committed scope)
+
+Deferred from the committed M10–M15 cut so v2 stays a focused "usable single-node" release, not a Redis re-implementation:
+
+| Theme | Item | Note |
+|---|---|---|
+| Observability | Prometheus `/metrics` endpoint behind `-metrics-addr` | Real-world deploys need RED metrics; not required for "usable single-node" |
 | Wire | `RENAME`, `RENAMENX`, `COPY` | Atomic edits — currently racy via `GET`+`SET`+`DEL` |
-| Wire | `TYPE`, `PERSIST`, `PTTL`, `PEXPIRE`, `PEXPIREAT` | Redis-compat completeness on existing key model |
-| **Types** | **Lists**: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `LINDEX` | Smallest type extension; unlocks job-queue use case |
-| **Types** | **Hashes**: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HKEYS`, `HVALS`, `HLEN` | Second-most-asked type after strings |
-| TUI | Multi-type rendering (string / list / hash views) | Follows the type additions |
-| TUI | `SCAN`-backed paging | Removes v1 large-keyspace caveat |
-| **Security** | `AUTH password` + `requirepass` flag | Lifts the localhost-only ceiling |
-| **Security** | TLS via `crypto/tls` (`-tls-cert`/`-tls-key`) | Same |
 | Persistence | RDB snapshots alongside AOF (opt-in, `-rdb-interval`) | Faster cold starts on large datasets |
 | Reliability | `-aof-truncate` flag to repair partial tails | Operationally important once auth lifts the deployment ceiling |
 | Content | Hashnode post: *"Three persistence policies, one append-only file"* | Owed since v1 — write after v2 ships, not before |
 | Integration | `prajwal-resilience-kit` Redis-adapter test target | First external consumer; validates AUTH + commands |
 
-**Breaking risk:** AOF format bump to v2 to encode list/hash records → version-gated, replays both v1 and v2 records.
+**Breaking risk:** AOF format bump to **v3** to encode list/hash records → version-gated, replays v1, v2, and v3 records (M11). RESP3 is wire-only and never touches the AOF format.
 
-**Cut criteria:** AUTH + lists + hashes + `INFO` + `SCAN` shipped, with corresponding ADRs.
+**Cut criteria:** AUTH + TLS + lists + hashes + `INFO` + `SCAN` + RESP3 shipped, each with a corresponding ADR.
 
 ## v3.0 — Distributed (the `tinyraft` payoff)
 
@@ -155,12 +231,11 @@ This is where toykv earns the original "Raft state-machine demo" framing. Only a
 | TUI | Cluster view: replicas, lag, current leader, log offset |
 | **Types** | **Sorted sets**: `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, `ZRANK`, `ZSCORE` |
 | **Types** | **Sets**: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`, `SDIFF` |
-| **Pub/Sub** | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PSUBSCRIBE` |
-| Wire | RESP3 (`HELLO 3` + push frames for pub/sub & keyspace notifications) |
+| **Pub/Sub** | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PSUBSCRIBE` (built on the RESP3 push frames delivered in v2 M10) |
 | Events | `__keyspace@0__:k` notifications for `expired`/`del`/`set` |
 | Storage | Optional sharded store (only if benchmarks justify it) |
 
-**Breaking risk:** wire bumps to RESP3 (additive — RESP2 clients still work via opt-out). AOF format may bump again for new types.
+**Breaking risk:** AOF format may bump again for new types (sets / sorted sets). The RESP3 wire bump already landed in v2 (M10) — additive, RESP2 clients still work via opt-out — so v3 pub/sub reuses its push frames rather than introducing a new protocol break.
 
 **Out of scope even at v3:** Redis Cluster slot/sharding model, Sentinel, Lua / `MULTI` / `EXEC`. (Spec rejects these explicitly.)
 
@@ -168,15 +243,15 @@ This is where toykv earns the original "Raft state-machine demo" framing. Only a
 
 ## Honest framing — pick one trajectory
 
-The source spec is emphatic about scope creep: *"that's how you end up half-building Redis instead of finishing tinykv."* Three honest paths forward — **no commitment yet, recorded so future-you remembers the choice is live**:
+The source spec is emphatic about scope creep: *"that's how you end up half-building Redis instead of finishing tinykv."* Three honest paths were on the table — recorded here so the reasoning behind the choice stays legible:
 
 | Option | Trajectory | When this is right |
 |---|---|---|
 | **A — ship v1, stop** | v2 and v3 stay aspirational; tracked here as backlog only | Spec-faithful. Project ships as the long-weekend artefact it was meant to be |
-| **B — v1 → v2** | Make it usable single-node; stop at "complete KV with auth + types" | Realistic if v1 sees real (personal/test) usage and the gaps annoy |
-| **C — v1 → v2 → v3** | Accept the Redis-clone trajectory | Only if `tinyraft` is happening and needs a state machine |
+| **B — v1 → v2** | Run the M10–M15 arc (RESP3, types, AUTH/TLS, INFO/SCAN, TUI v2); stop at "complete usable single-node KV" | Realistic if v1 sees real (personal/test) usage and the gaps annoy. Minimal viable v2 is just AUTH+TLS (M12) — the rest is optional even within v2 |
+| **C — v1 → v3 (skip or trim v2)** | Jump to the Raft-distributed payoff — the actual downstream dependency | Only once `ToyRaft` ships as a vendorable library. v3 is blocked on `ToyRaft` v1.0-rc1; v2 can be skipped or trimmed to AUTH+TLS if scope is tight, since downstream work needs v3 (multi-node), not v2 |
 
-Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 ships, not before.
+**Decided 2026-07-13: Option B** — v1.0.0 has seen ~4 weeks of real use since the 2026-06-17 tag, and the gaps that matter (no auth, string-only values, `KEYS *`-only iteration) are worth closing. The full M10–M15 arc is now the committed active plan. The asymmetry the tracker records still holds: **v2 is polish; v3 is the real downstream dependency** — so Option C ("trim v2 to AUTH+TLS, jump to v3") stays live the moment `ToyRaft` ships as a vendorable library, and v2 can fall back to M12-only if scope tightens without abandoning the release.
 
 ## Status tracking
 
@@ -192,9 +267,24 @@ Default unless explicitly chosen: **Option A**. Decision is reviewed after v1 sh
 | M7 | TUI | ✅ | [#17](https://github.com/prajwalmahajan101/toykv/pull/17) [#19](https://github.com/prajwalmahajan101/toykv/pull/19) | `m7` |
 | M8 | Integration tests (protocol compat) | ✅ | _see `feat/integration-tests` PR series_ | `m8` |
 | M9 | Bench + polish + v1.0.0 | ✅ | _see `feat/release-v1` PR_ | `v1.0.0` |
+| M10 | RESP3 wire upgrade | ⏳ Planned (committed) | — | `m10` |
+| M11 | Value types: lists + hashes (AOF v3) | ⏳ Planned (committed) | — | `m11` |
+| M12 | AUTH + TLS | ⏳ Planned (committed) | — | `m12` |
+| M13 | INFO + SCAN | ⏳ Planned (committed) | — | `m13` |
+| M14 | TUI v2 | ⏳ Planned (committed) | — | `m14` |
+| M15 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
 
 ## Changes from the previous roadmap
 
 - **M3 ↔ M4 swap:** AOF now lands before TTL (was: TTL before AOF). Rationale: AOF is the highest-risk surface; TTL state needs to persist anyway; building AOF first lets the version-byte design get exercised on a real second use case when TTL adds expiry encoding.
 - **Risk tests moved upstream:** each milestone owns its own crash-injection / concurrent-stress test. M3 owns the durability crash test. M4 owns the TTL race test. M5 owns the rewrite-during-writes crash test. M8 becomes pure end-to-end protocol compat instead of the catch-all for everything risky.
 - **M2 explicitly owns a concurrent stress test** (was: just unit tests).
+
+**v2 additions (M10–M15):**
+
+- **RESP3 pulled forward v3.0 → v2.0.** RESP3 was originally a v3 wire item; it moves up to M10 as the v2 wire foundation so the type work (M11) exercises its map/set replies as a real second use case. v3 pub/sub then reuses the push frames rather than owning the protocol break.
+- **Pub/sub stays v3.** Only the RESP3 transport moves to v2; `SUBSCRIBE`/`PUBLISH` and keyspace notifications remain v3.
+- **`TYPE` folded into the types milestone (M11)** rather than the loose wire-completeness list — it's practically required once keys are typed (TUI + `SCAN` depend on it).
+- **Single AOF bump this cycle (v3), owned by M11** — mirrors v1's discipline of one focused format change per milestone that needs it.
+- **v2 is now committed (decided 2026-07-13).** The earlier draft framed the whole M10–M15 arc as "proposed, optional — not committed." After ~4 weeks of v1.0.0 in real use, the trajectory decision is made: **Option B (v1 → v2), full arc.** The section header, banner, status table, and [Honest framing](#honest-framing--pick-one-trajectory) all reflect the commitment. The honest caveats are preserved but subordinated: minimal v2 = AUTH+TLS (M12) remains the fallback if scope tightens, and v3 (Raft, blocked on `ToyRaft`) is still the real downstream dependency.
+- **Per-milestone dependency + ADR ownership added.** Each of M10–M15 now names what it depends on and which ADR it owns (RESP3 negotiation → M10, tagged-union store + AOF v3 → M11, AUTH/TLS → M12), so ADRs are written after their owning milestone merges rather than batched at release (M15).
