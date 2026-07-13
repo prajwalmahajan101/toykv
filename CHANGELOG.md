@@ -12,6 +12,21 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ### Added
 
+- Value types: lists and hashes (M11, tag `m11`). The store entry is now
+  a tagged union (string / list / hash); lists ride a growable
+  ring-buffer deque (O(1) pushes at both ends).
+- List commands: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`,
+  `LINDEX`. Hash commands: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HKEYS`,
+  `HVALS`, `HLEN`, `HGETALL` — `HGETALL` replies with a native RESP3
+  map (`%`) to `HELLO 3` clients and a flat array on RESP2.
+- `TYPE key` (`string` | `list` | `hash` | `none`) and Redis-exact
+  `-WRONGTYPE` errors on cross-type operations. A list/hash emptied by
+  its last pop/delete removes the key (Redis parity).
+- AOF format v3: typed mutating records; replay accepts v1, v2, and v3
+  files. Opening an older file upgrades its header version byte in place
+  before any append, so pre-M11 binaries fail fast with a version error
+  instead of dying mid-replay. `BGREWRITEAOF` snapshots each typed key as
+  one canonical `RPUSH`/`HSET` record (+ `PEXPIREAT` when a TTL is set).
 - RESP3 wire upgrade, opt-in via `HELLO [protover [AUTH user pass]]`;
   per-connection protocol state defaults to RESP2 (M10, tag `m10`).
 - RESP3 encoder set in `internal/resp`: `%` map, `~` set, `,` double,
