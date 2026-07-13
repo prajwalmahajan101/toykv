@@ -43,6 +43,26 @@ var compatSequence = []compatStep{
 	{args: []string{"DEL", "a"}, wantR2: ":1\r\n"},
 	{args: []string{"KEYS", "*"}, wantR2: "*1\r\n$3\r\nctr\r\n"},
 	{args: []string{"DBSIZE"}, wantR2: ":1\r\n"},
+
+	// Typed commands (M11). HGETALL is the one new frame divergence:
+	// a native %N map on RESP3, a flat *2N array on RESP2. A single-
+	// field hash keeps the wire bytes deterministic (map iteration
+	// order is unspecified for larger hashes).
+	{args: []string{"RPUSH", "q", "a", "b"}, wantR2: ":2\r\n"},
+	{args: []string{"LRANGE", "q", "0", "-1"}, wantR2: "*2\r\n$1\r\na\r\n$1\r\nb\r\n"},
+	{args: []string{"LPOP", "q"}, wantR2: "$1\r\na\r\n"},
+	{args: []string{"TYPE", "q"}, wantR2: "+list\r\n"},
+	{args: []string{"LPOP", "q"}, wantR2: "$1\r\nb\r\n"},
+	{args: []string{"TYPE", "q"}, wantR2: "+none\r\n"},
+	{args: []string{"HSET", "hh", "f", "v"}, wantR2: ":1\r\n"},
+	{args: []string{"HGET", "hh", "f"}, wantR2: "$1\r\nv\r\n"},
+	{args: []string{"HGETALL", "hh"}, wantR2: "*2\r\n$1\r\nf\r\n$1\r\nv\r\n", wantR3: "%1\r\n$1\r\nf\r\n$1\r\nv\r\n"},
+	{args: []string{"TYPE", "hh"}, wantR2: "+hash\r\n"},
+	{args: []string{"HDEL", "hh", "f"}, wantR2: ":1\r\n"},
+	{args: []string{"TYPE", "hh"}, wantR2: "+none\r\n"},
+	{args: []string{"LPUSH", "q", "x"}, wantR2: ":1\r\n"},
+	{args: []string{"GET", "q"}, wantR2: "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"},
+
 	{args: []string{"FLUSHDB"}, wantR2: "+OK\r\n"},
 	{args: []string{"DBSIZE"}, wantR2: ":0\r\n"},
 }
