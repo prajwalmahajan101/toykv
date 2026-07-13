@@ -42,6 +42,15 @@ var commands = map[string]handler{
 	"PERSIST":   {fn: cmdPersist, minArgs: 2, maxArgs: 2},
 
 	"BGREWRITEAOF": {fn: cmdBGRewriteAOF, minArgs: 1, maxArgs: 1},
+
+	// Lists (M11).
+	"LPUSH":  {fn: cmdLPush, minArgs: 3, maxArgs: -1},
+	"RPUSH":  {fn: cmdRPush, minArgs: 3, maxArgs: -1},
+	"LPOP":   {fn: cmdLPop, minArgs: 2, maxArgs: 2},
+	"RPOP":   {fn: cmdRPop, minArgs: 2, maxArgs: 2},
+	"LLEN":   {fn: cmdLLen, minArgs: 2, maxArgs: 2},
+	"LRANGE": {fn: cmdLRange, minArgs: 4, maxArgs: 4},
+	"LINDEX": {fn: cmdLIndex, minArgs: 3, maxArgs: 3},
 }
 
 // dispatch routes argv to its handler, validating the command exists
