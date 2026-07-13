@@ -19,11 +19,12 @@ jobs:
           go-version: '1.26'
           check-latest: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v8 installs golangci-lint v2.x, which the v2-schema .golangci.yml
+        # requires. goinstall mode still required for Go 1.26 source — the
+        # prebuilt binary cannot parse it.
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
-          # goinstall mode required for Go 1.26 source — prebuilt binary
-          # cannot parse it.
           install-mode: goinstall
           args: --timeout=5m
 
