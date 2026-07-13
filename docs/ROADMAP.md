@@ -286,7 +286,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M7 | TUI | ✅ | [#17](https://github.com/prajwalmahajan101/toykv/pull/17) [#19](https://github.com/prajwalmahajan101/toykv/pull/19) | `m7` |
 | M8 | Integration tests (protocol compat) | ✅ | _see `feat/integration-tests` PR series_ | `m8` |
 | M9 | Bench + polish + v1.0.0 | ✅ | _see `feat/release-v1` PR_ | `v1.0.0` |
-| M10 | RESP3 wire upgrade | 🚧 In progress (`feat/resp3`) | — | `m10` |
+| M10 | RESP3 wire upgrade | ✅ | [#26](https://github.com/prajwalmahajan101/toykv/pull/26) | `m10` |
 | M11 | Value types: lists + hashes (AOF v3) | ⏳ Planned (committed) | — | `m11` |
 | M12 | AUTH + TLS | ⏳ Planned (committed) | — | `m12` |
 | M13 | INFO + SCAN | ⏳ Planned (committed) | — | `m13` |
