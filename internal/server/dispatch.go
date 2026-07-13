@@ -9,8 +9,10 @@ import (
 
 // handler executes one command and returns the reply frame.
 type handler struct {
-	// fn is the command implementation.
-	fn func(s *Server, argv [][]byte) resp.Value
+	// fn is the command implementation. cs carries per-connection state
+	// (protocol version, later auth); most handlers ignore it, but HELLO
+	// reads and mutates it.
+	fn func(s *Server, cs *connState, argv [][]byte) resp.Value
 	// minArgs / maxArgs bound the inclusive argv length, *including* the
 	// command name itself. maxArgs = -1 means unbounded.
 	minArgs, maxArgs int
@@ -44,7 +46,7 @@ var commands = map[string]handler{
 // dispatch routes argv to its handler, validating the command exists
 // and the arity is correct. Returns an error frame on lookup or arity
 // failure.
-func (s *Server) dispatch(argv [][]byte) resp.Value {
+func (s *Server) dispatch(cs *connState, argv [][]byte) resp.Value {
 	if len(argv) == 0 {
 		return resp.Error("ERR empty command")
 	}
@@ -56,7 +58,7 @@ func (s *Server) dispatch(argv [][]byte) resp.Value {
 	if len(argv) < h.minArgs || (h.maxArgs >= 0 && len(argv) > h.maxArgs) {
 		return resp.Error(fmt.Sprintf("ERR wrong number of arguments for '%s'", lowerASCII(argv[0])))
 	}
-	return h.fn(s, argv)
+	return h.fn(s, cs, argv)
 }
 
 // upperASCII returns an upper-case copy of b. Command names are

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -14,6 +15,11 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
 )
+
+// serverVersion is reported in the HELLO handshake's `version` field.
+// It is a placeholder until the M15 release wires the ldflags build
+// version through Config, matching the CLI/TUI `-version` plumbing.
+const serverVersion = "2.0.0-dev"
 
 // Config holds server configuration.
 type Config struct {
@@ -39,6 +45,10 @@ type Server struct {
 	listener net.Listener
 	wg       sync.WaitGroup
 	closed   bool
+
+	// connID assigns a monotonic id to each accepted connection, echoed
+	// in the HELLO handshake. Starts at 0; the first connection gets 1.
+	connID atomic.Uint64
 
 	// rewriteMu guards rewriteInFlight. Held only across the flag
 	// read-modify-write, never across the rewrite itself.
@@ -102,7 +112,10 @@ func New(cfg Config) (*Server, error) {
 // no-op their appendIfLive — the same code serves both replay and live
 // traffic without a second handler table.
 func (s *Server) replayApply(argv [][]byte) error {
-	reply := s.dispatch(argv)
+	// Replay never writes replies to a client, so the connState's proto is
+	// irrelevant; a zero-value throwaway suffices. HELLO is not a mutating
+	// command and never appears in the AOF, so it is never replayed.
+	reply := s.dispatch(&connState{}, argv)
 	if reply.Kind == resp.KindError {
 		return errors.New(reply.Str)
 	}
