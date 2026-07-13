@@ -1,28 +1,24 @@
-# golangci-lint configuration for toykv.
+# golangci-lint configuration for toykv (schema v2).
 #
 # Policy:
 #   - Security findings (gosec) are BLOCKING — fix or //nolint:gosec with reason.
 #   - Correctness findings (govet, errcheck, staticcheck, ineffassign, unused) are BLOCKING.
-#   - Style findings (revive, gocritic, misspell, gofmt) are advisory but enforced
-#     in CI to keep diffs clean.
+#   - Style findings (revive, gocritic, misspell) and formatting (gofmt) are
+#     advisory but enforced in CI to keep diffs clean.
 #
-# See docs/adr/ for rationale (ADRs land post-code per docs/adr/README.md).
-
+# Migrated from the v1 schema when the local toolchain moved to golangci-lint
+# v2 (v1 config is rejected with "unsupported version of the configuration").
+# CI installs v2 via golangci-lint-action@v8 + install-mode:goinstall so the
+# Go 1.26 source builds. See docs/adr/ for rationale.
+version: "2"
 run:
-  timeout: 5m
+  go: "1.26"
   tests: true
-  # Analysis target matches go.mod. The CI workflow uses
-  # install-mode: goinstall so golangci-lint is built from source with
-  # the runner's Go 1.26 toolchain (the prebuilt binary cannot parse
-  # 1.26 source).
-  go: '1.26'
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - gocritic
-    - gofmt
     - gosec
     - govet
     - ineffassign
@@ -30,57 +26,63 @@ linters:
     - revive
     - staticcheck
     - unused
-
-linters-settings:
-  gofmt:
-    simplify: true
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - performance
-      - style
-    disabled-checks:
-      - ifElseChain
-      - hugeParam
-      # exitAfterDefer: cmd/* main funcs intentionally use os.Exit after
-      # defer for cancel/cleanup; the OS reclaims on exit anyway.
-      - exitAfterDefer
-      # unnamedResult: stylistic preference; multi-return signatures here
-      # are short and the names would add noise.
-      - unnamedResult
-      # evalOrder: Bubble Tea pattern returns (model, cmd) from update
-      # branches; rewriting to please the linter hurts readability.
-      - evalOrder
-      # paramTypeCombine / preferStringWriter: stylistic, no correctness
-      # value here.
-      - paramTypeCombine
-      - preferStringWriter
-  revive:
+  settings:
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - hugeParam
+        - exitAfterDefer
+        - unnamedResult
+        - evalOrder
+        - paramTypeCombine
+        - preferStringWriter
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+    gosec:
+      excludes:
+        - G104
+        - G115
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: indent-error-flow
+        - name: error-return
+        - name: error-naming
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: var-naming
-      - name: package-comments
-      - name: indent-error-flow
-      - name: error-return
-      - name: error-naming
-      - name: exported
-        arguments:
-          - disableStutteringCheck
-  gosec:
-    excludes:
-      # G104: errors unhandled — covered by errcheck with broader visibility.
-      - G104
-      # G115: integer overflow on int↔uint conversions. Too noisy in code
-      # that uses len() (always non-negative), time.Now().UnixNano(), and
-      # AOF offsets where overflow is structurally impossible. Real overflow
-      # risks are caught by govet's stdversion/conversion checks.
-      - G115
-
+      - linters:
+          - errcheck
+          - gosec
+          - revive
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - revive
   max-issues-per-linter: 0
   max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
