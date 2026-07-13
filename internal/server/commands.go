@@ -46,11 +46,14 @@ func cmdEcho(_ *Server, _ *connState, argv [][]byte) resp.Value {
 	return resp.Bulk(argv[1])
 }
 
-// cmdGet returns the bulk value, or nil-bulk when the key is missing.
+// cmdGet returns the bulk value, or null when the key is missing. The
+// null is resp.Null(): the writer renders it as `_` to a RESP3 client and
+// downgrades it to `$-1` for RESP2, so RESP2 replies stay byte-identical
+// to v1 (ADR-0011).
 func cmdGet(s *Server, _ *connState, argv [][]byte) resp.Value {
 	v, ok := s.store.Get(string(argv[1]))
 	if !ok {
-		return resp.NullBulk()
+		return resp.Null()
 	}
 	return resp.Bulk(v)
 }
@@ -74,7 +77,9 @@ func cmdSet(s *Server, _ *connState, argv [][]byte) resp.Value {
 		return resp.Error(err.Error())
 	}
 	if ok := s.store.Set(string(argv[1]), argv[2], opts); !ok {
-		return resp.NullBulk()
+		// NX/XX condition not met: null reply. resp.Null() ⇒ `_` on RESP3,
+		// `$-1` on RESP2 (byte-identical to v1) — see cmdGet / ADR-0011.
+		return resp.Null()
 	}
 	canonical := renderCanonicalSet(argv[1], argv[2], opts.ExpireAt)
 	if err := s.appendIfLive(canonical); err != nil {

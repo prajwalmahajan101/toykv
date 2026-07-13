@@ -1,0 +1,61 @@
+package server
+
+import (
+	"strconv"
+
+	"github.com/prajwalmahajan101/toykv/internal/resp"
+)
+
+// cmdHello implements HELLO [protover [AUTH username password]] — the
+// RESP3 handshake and protocol-negotiation command (ADR-0011).
+//
+//   - HELLO            → handshake for the current protocol (no change).
+//   - HELLO 2 | 3      → switch this connection's reply protocol, then
+//     return the handshake in the newly negotiated protocol.
+//   - HELLO <other>    → -NOPROTO (protocol unchanged).
+//   - HELLO … AUTH u p → the grammar is accepted so M12 can wire real
+//     verification; with no requirepass configured it errors exactly as
+//     Redis does, and the protocol is left unchanged.
+//
+// Validation precedes any mutation: a rejected AUTH or protover leaves
+// cs.proto untouched, matching Redis semantics.
+func cmdHello(s *Server, cs *connState, argv [][]byte) resp.Value {
+	proto := cs.proto
+	if len(argv) >= 2 {
+		p, err := strconv.Atoi(string(argv[1]))
+		if err != nil || (p != int(resp.Proto2) && p != int(resp.Proto3)) {
+			return resp.Error("NOPROTO sorry, this protocol version is not supported.")
+		}
+		proto = resp.Proto(p)
+	}
+
+	// Optional [AUTH username password] clause. Only the exact 3-token
+	// form is valid; anything else is a syntax error.
+	if len(argv) > 2 {
+		if len(argv) != 5 || upperASCII(argv[2]) != "AUTH" {
+			return resp.Error("ERR Syntax error in HELLO")
+		}
+		// M10 ships no requirepass, so AUTH has nothing to check against —
+		// same error Redis returns. M12 replaces this branch with a real
+		// password check and only then commits the protocol switch.
+		return resp.Error("ERR Client sent AUTH, but no password is set.")
+	}
+
+	cs.proto = proto
+	return helloReply(cs)
+}
+
+// helloReply builds the handshake map. It is encoded as a RESP3 map to a
+// proto-3 connection and as a flat array to a proto-2 one (the writer's
+// map downgrade), so a single reply value serves both protocols.
+func helloReply(cs *connState) resp.Value {
+	return resp.Map(
+		resp.Bulk([]byte("server")), resp.Bulk([]byte("toykv")),
+		resp.Bulk([]byte("version")), resp.Bulk([]byte(serverVersion)),
+		resp.Bulk([]byte("proto")), resp.Int(int64(cs.proto)),
+		resp.Bulk([]byte("id")), resp.Int(int64(cs.id)),
+		resp.Bulk([]byte("mode")), resp.Bulk([]byte("standalone")),
+		resp.Bulk([]byte("role")), resp.Bulk([]byte("master")),
+		resp.Bulk([]byte("modules")), resp.Array(),
+	)
+}
