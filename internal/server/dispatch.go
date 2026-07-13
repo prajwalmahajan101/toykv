@@ -51,6 +51,18 @@ var commands = map[string]handler{
 	"LLEN":   {fn: cmdLLen, minArgs: 2, maxArgs: 2},
 	"LRANGE": {fn: cmdLRange, minArgs: 4, maxArgs: 4},
 	"LINDEX": {fn: cmdLIndex, minArgs: 3, maxArgs: 3},
+
+	// Hashes + TYPE (M11). HSET's pair validation (even field/value
+	// count) lives in the handler — arity bounds can't express it.
+	"HSET":    {fn: cmdHSet, minArgs: 4, maxArgs: -1},
+	"HGET":    {fn: cmdHGet, minArgs: 3, maxArgs: 3},
+	"HDEL":    {fn: cmdHDel, minArgs: 3, maxArgs: -1},
+	"HEXISTS": {fn: cmdHExists, minArgs: 3, maxArgs: 3},
+	"HKEYS":   {fn: cmdHKeys, minArgs: 2, maxArgs: 2},
+	"HVALS":   {fn: cmdHVals, minArgs: 2, maxArgs: 2},
+	"HLEN":    {fn: cmdHLen, minArgs: 2, maxArgs: 2},
+	"HGETALL": {fn: cmdHGetAll, minArgs: 2, maxArgs: 2},
+	"TYPE":    {fn: cmdType, minArgs: 2, maxArgs: 2},
 }
 
 // dispatch routes argv to its handler, validating the command exists
