@@ -302,7 +302,7 @@ func TestAddr_BeforeRun(t *testing.T) {
 
 func TestDispatch_EmptyArgv(t *testing.T) {
 	s := setupServer(t)
-	got := s.dispatch(nil)
+	got := s.dispatch(&connState{}, nil)
 	if got.Kind != resp.KindError {
 		t.Fatalf("got %+v, want error", got)
 	}

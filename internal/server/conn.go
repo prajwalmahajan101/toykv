@@ -13,6 +13,7 @@ func (s *Server) handleConn(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	r := resp.NewReader(c)
 	w := resp.NewWriter(c)
+	cs := newConnState(s.connID.Add(1))
 
 	for {
 		argv, err := r.ReadCommand()
@@ -22,13 +23,15 @@ func (s *Server) handleConn(c net.Conn) {
 			}
 			// Send one error frame so the client sees what happened, then
 			// drop the conn. We do not try to recover from a corrupted stream.
+			// A simple error is byte-identical across RESP2/RESP3, so it is
+			// safe to send at the default protocol even after HELLO 3.
 			s.log.Debug("protocol error", "remote", remoteAddr(c), "err", err)
 			_ = w.WriteFrame(resp.Error("ERR Protocol error"))
 			_ = w.Flush()
 			return
 		}
-		reply := s.dispatch(argv)
-		if err := w.WriteFrame(reply); err != nil {
+		reply := s.dispatch(cs, argv)
+		if err := w.WriteFrameProto(reply, cs.proto); err != nil {
 			s.log.Debug("write reply failed", "remote", remoteAddr(c), "err", err)
 			return
 		}

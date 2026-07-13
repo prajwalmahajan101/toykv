@@ -34,7 +34,7 @@ func (s *Server) appendIfLive(argv [][]byte) error {
 // cmdPing implements PING. With no argument it returns +PONG. With one
 // argument it echoes the argument as a bulk string — matching Redis's
 // behaviour.
-func cmdPing(_ *Server, argv [][]byte) resp.Value {
+func cmdPing(_ *Server, _ *connState, argv [][]byte) resp.Value {
 	if len(argv) == 1 {
 		return resp.String("PONG")
 	}
@@ -42,12 +42,12 @@ func cmdPing(_ *Server, argv [][]byte) resp.Value {
 }
 
 // cmdEcho returns its argument as a bulk string.
-func cmdEcho(_ *Server, argv [][]byte) resp.Value {
+func cmdEcho(_ *Server, _ *connState, argv [][]byte) resp.Value {
 	return resp.Bulk(argv[1])
 }
 
 // cmdGet returns the bulk value, or nil-bulk when the key is missing.
-func cmdGet(s *Server, argv [][]byte) resp.Value {
+func cmdGet(s *Server, _ *connState, argv [][]byte) resp.Value {
 	v, ok := s.store.Get(string(argv[1]))
 	if !ok {
 		return resp.NullBulk()
@@ -68,7 +68,7 @@ func cmdGet(s *Server, argv [][]byte) resp.Value {
 // PXAT preserves wall-clock semantics across restart (ADR-0004) — a
 // relative `PX <ms>` would silently extend the entry's life by the
 // downtime, which is the bug the format was designed to avoid.
-func cmdSet(s *Server, argv [][]byte) resp.Value {
+func cmdSet(s *Server, _ *connState, argv [][]byte) resp.Value {
 	opts, err := parseSetOptions(argv[3:], s.now())
 	if err != nil {
 		return resp.Error(err.Error())
@@ -174,7 +174,7 @@ func computeExpireAt(token string, n int64, now time.Time) (time.Time, error) {
 
 // cmdDel removes one or more keys and returns the count actually
 // deleted. Appends only when at least one key was removed.
-func cmdDel(s *Server, argv [][]byte) resp.Value {
+func cmdDel(s *Server, _ *connState, argv [][]byte) resp.Value {
 	keys := make([]string, 0, len(argv)-1)
 	for _, k := range argv[1:] {
 		keys = append(keys, string(k))
@@ -190,7 +190,7 @@ func cmdDel(s *Server, argv [][]byte) resp.Value {
 
 // cmdExists counts how many supplied keys exist. Read-only — no AOF
 // append.
-func cmdExists(s *Server, argv [][]byte) resp.Value {
+func cmdExists(s *Server, _ *connState, argv [][]byte) resp.Value {
 	keys := make([]string, 0, len(argv)-1)
 	for _, k := range argv[1:] {
 		keys = append(keys, string(k))
@@ -198,8 +198,8 @@ func cmdExists(s *Server, argv [][]byte) resp.Value {
 	return resp.Int(int64(s.store.Exists(keys...)))
 }
 
-func cmdIncr(s *Server, argv [][]byte) resp.Value { return incrDecr(s, argv, true) }
-func cmdDecr(s *Server, argv [][]byte) resp.Value { return incrDecr(s, argv, false) }
+func cmdIncr(s *Server, _ *connState, argv [][]byte) resp.Value { return incrDecr(s, argv, true) }
+func cmdDecr(s *Server, _ *connState, argv [][]byte) resp.Value { return incrDecr(s, argv, false) }
 
 func incrDecr(s *Server, argv [][]byte, up bool) resp.Value {
 	var (
@@ -227,7 +227,7 @@ func incrDecr(s *Server, argv [][]byte, up bool) resp.Value {
 
 // cmdKeys returns an array of bulk-string keys matching the pattern.
 // Read-only.
-func cmdKeys(s *Server, argv [][]byte) resp.Value {
+func cmdKeys(s *Server, _ *connState, argv [][]byte) resp.Value {
 	keys, err := s.store.Keys(string(argv[1]))
 	if err != nil {
 		if errors.Is(err, path.ErrBadPattern) {
@@ -243,7 +243,7 @@ func cmdKeys(s *Server, argv [][]byte) resp.Value {
 }
 
 // cmdFlushDB removes every key and persists the act.
-func cmdFlushDB(s *Server, argv [][]byte) resp.Value {
+func cmdFlushDB(s *Server, _ *connState, argv [][]byte) resp.Value {
 	s.store.FlushDB()
 	if err := s.appendIfLive(argv); err != nil {
 		return resp.Error("ERR aof append failed")
@@ -252,7 +252,7 @@ func cmdFlushDB(s *Server, argv [][]byte) resp.Value {
 }
 
 // cmdDBSize returns the number of keys. Read-only.
-func cmdDBSize(s *Server, _ [][]byte) resp.Value {
+func cmdDBSize(s *Server, _ *connState, _ [][]byte) resp.Value {
 	return resp.Int(int64(s.store.DBSize()))
 }
 
@@ -260,12 +260,12 @@ func cmdDBSize(s *Server, _ [][]byte) resp.Value {
 // and the TTL was set, 0 otherwise. On success it appends the canonical
 // PEXPIREAT form so replay never re-evaluates a relative duration —
 // see ADR-0004.
-func cmdExpire(s *Server, argv [][]byte) resp.Value {
+func cmdExpire(s *Server, _ *connState, argv [][]byte) resp.Value {
 	return setExpiry(s, argv, time.Second)
 }
 
 // cmdPExpire implements PEXPIRE key milliseconds.
-func cmdPExpire(s *Server, argv [][]byte) resp.Value {
+func cmdPExpire(s *Server, _ *connState, argv [][]byte) resp.Value {
 	return setExpiry(s, argv, time.Millisecond)
 }
 
@@ -281,7 +281,7 @@ func setExpiry(s *Server, argv [][]byte, unit time.Duration) resp.Value {
 // cmdPExpireAt implements PEXPIREAT key unix-milliseconds. The absolute
 // form is canonical on the wire AND in the AOF — it's the same shape
 // EXPIRE / PEXPIRE rewrite themselves to before appending.
-func cmdPExpireAt(s *Server, argv [][]byte) resp.Value {
+func cmdPExpireAt(s *Server, _ *connState, argv [][]byte) resp.Value {
 	ms, err := strconv.ParseInt(string(argv[2]), 10, 64)
 	if err != nil {
 		return resp.Error("ERR value is not an integer or out of range")
@@ -310,12 +310,12 @@ func applyExpire(s *Server, key []byte, expireAt time.Time) resp.Value {
 // cmdTTL returns remaining TTL in seconds. -2 for missing/expired, -1
 // for a key with no TTL, ≥0 otherwise. Sub-second remainders truncate
 // (Redis behaviour; use PTTL for millisecond precision).
-func cmdTTL(s *Server, argv [][]byte) resp.Value {
+func cmdTTL(s *Server, _ *connState, argv [][]byte) resp.Value {
 	return ttlReply(s.store.TTL(string(argv[1])), time.Second)
 }
 
 // cmdPTTL returns remaining TTL in milliseconds.
-func cmdPTTL(s *Server, argv [][]byte) resp.Value {
+func cmdPTTL(s *Server, _ *connState, argv [][]byte) resp.Value {
 	return ttlReply(s.store.TTL(string(argv[1])), time.Millisecond)
 }
 
@@ -335,7 +335,7 @@ func ttlReply(d time.Duration, unit time.Duration) resp.Value {
 // only when a TTL was actually cleared — replay against an empty store
 // applies it as a no-op (PERSIST on missing returns 0, no further
 // effect), which is the desired idempotent shape.
-func cmdPersist(s *Server, argv [][]byte) resp.Value {
+func cmdPersist(s *Server, _ *connState, argv [][]byte) resp.Value {
 	if !s.store.Persist(string(argv[1])) {
 		return resp.Int(0)
 	}

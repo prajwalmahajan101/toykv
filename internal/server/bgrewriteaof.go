@@ -16,7 +16,7 @@ import (
 // The single-flight gate is the server-level rewriteInFlight flag, set
 // before launching the goroutine and cleared in defer regardless of
 // outcome. See ADR-0005 for the underlying design.
-func cmdBGRewriteAOF(s *Server, _ [][]byte) resp.Value {
+func cmdBGRewriteAOF(s *Server, _ *connState, _ [][]byte) resp.Value {
 	if s.aof == nil {
 		return resp.Error("ERR persistence is disabled")
 	}
