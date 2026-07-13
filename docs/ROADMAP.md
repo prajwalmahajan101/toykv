@@ -7,7 +7,8 @@ v1  M0 Skeleton ─► M1 RESP echo ─► M2 Store core ─► M3 AOF + crash �
     M5 Compaction ─► M6 CLI ─► M7 TUI ─► M8 Integration tests ─► M9 Bench + polish ─► v1.0.0
 
 v2  M10 RESP3 ─► M11 Types (lists+hashes, AOF v3) ─► M12 AUTH/TLS ─►
-    M13 INFO + SCAN ─► M14 TUI v2 ─► M15 Bench + polish ─► v2.0.0   (committed — active plan)
+    M13 INFO + SCAN ─► M14 TUI v2 ─► M15 Hardening (protected-mode + atomic ops) ─►
+    M16 Bench + polish ─► v2.0.0   (committed — active plan)
 ```
 
 ## Why this order — bottom-up + risk-first
@@ -119,15 +120,17 @@ Two ordering decisions deserve calling out:
 
 ## v2.0 — Useful (committed — the active plan post-v1)
 
-Make toykv usable beyond a learning demo: authenticated, typed, observable, single-node. Same execution discipline as v1 — branch off `main`, merge via PR, **no direct commits to `main`** — and the same governing principle: **the highest-blast-radius surface ships and is crash-tested earliest, and each milestone owns its own risk test.**
+Make toykv usable beyond a learning demo: authenticated, **safe-by-default**, typed, observable, single-node. Same execution discipline as v1 — branch off `main`, merge via PR, **no direct commits to `main`** — and the same governing principle: **the highest-blast-radius surface ships and is crash-tested earliest, and each milestone owns its own risk test.**
 
-> **Decision recorded 2026-07-13.** v1.0.0 shipped 2026-06-17; after ~4 weeks of real use the trajectory decision (previously deferred) is now made: **run the full M10–M15 arc — Option B (v1 → v2)**. See [Honest framing](#honest-framing--pick-one-trajectory).
+> **Earning the `2.0.0` tag (decided 2026-07-13).** Everything in M10–M14 is *additive* — RESP3 is opt-in, AOF v3 replays old formats — so by semver alone this work is a `1.x`, not a forced major. `2.0.0` is *earned*, not defaulted, by **M15's protected-mode change**: v1 served any bind with no auth; v2 refuses a non-loopback bind without auth unless explicitly overridden. That single deliberate break to the deployment contract is what makes the major honest. M15 also promotes **atomic `RENAME`/`RENAMENX`/`COPY`** out of the backlog — closing a real correctness gap (racy today via `GET`+`SET`+`DEL`) — so the release ships one breaking change and one correctness win, not a pile of additions hoping volume justifies the number.
+
+> **Decision recorded 2026-07-13.** v1.0.0 shipped 2026-06-17; after ~4 weeks of real use the trajectory decision (previously deferred) is now made: **run the full M10–M16 arc — Option B (v1 → v2)**. See [Honest framing](#honest-framing--pick-one-trajectory).
 >
 > The honest caveats still stand, subordinate to that commitment: the backlog tracker (`project-todo/projects/toykv.md`) records that a *minimal* v2 is **AUTH + TLS only**, and that **v3 (Raft-distributed) is the real downstream dependency** — blocked on `ToyRaft` shipping as a vendorable library. So if scope tightens mid-cycle, v2 can be trimmed back to M12 (AUTH+TLS) without abandoning the release; and jumping to v3 stays a live option the moment `ToyRaft` is ready.
 
 ### Why this order — bottom-up + risk-first (continued)
 
-Numbering continues the single v1 sequence (**M10–M15**); the release tag is `v2.0.0`.
+Numbering continues the single v1 sequence (**M10–M16**); the release tag is `v2.0.0`.
 
 | Risk | Severity | Owned by |
 |---|---|---|
@@ -138,12 +141,15 @@ Numbering continues the single v1 sequence (**M10–M15**); the release tag is `
 | TLS handshake + connection drain | Medium | M12 — same |
 | RESP3 downgrade — a RESP2 client's replies must stay byte-identical | Medium | M10 — dual-protocol compat sweep |
 | SCAN cursor stability under concurrent mutation | Medium | M13 — cursor-guarantee stress |
+| Unsafe default exposure — a non-loopback bind serving unauthenticated | **High** | M15 — protected-mode bind-refusal test |
+| `RENAME` / `COPY` atomicity under concurrent mutation | Medium | M15 — concurrent-rename stress |
 | `INFO` field correctness | Low | M13 |
 
 Two ordering decisions deserve calling out:
 
 1. **RESP3 (M10) before types (M11).** RESP3 is the wire foundation — additive, low store-blast-radius, opt-in via `HELLO 3`. Building the protocol-negotiation and type-tag plumbing first means types then exercise RESP3's map/set replies (`HGETALL` → map) as a real second use case — the same logic that put AOF before TTL in v1.
 2. **Types (M11) before AUTH (M12).** Types are the highest-blast-radius surface in v2 (store model + AOF format bump), so they ship and get crash-tested early. AUTH/TLS is self-contained connection-layer work that doesn't depend on the type system and can slot in once the risky format change is proven.
+3. **Hardening (M15) after AUTH (M12).** Protected mode gates on `requirepass` existing, so it can only land once M12 has shipped auth. It sits at M15 — after the feature milestones — because it is the *deliberate breaking change that earns the major*, and it reads most honestly as the last gate before the release milestone rather than buried inside M12. If v2 ever trims to the minimal AUTH+TLS cut, protected mode should be pulled forward into M12 — exposing auth without a safe default is the exact risk the minimal cut would otherwise ship.
 
 ---
 
@@ -191,30 +197,43 @@ Two ordering decisions deserve calling out:
 - **Owned risk test:** `teatest` smoke per type view + a paging scenario against a running server.
 - **Exit:** the TUI renders every value type and pages a large keyspace; all v1 keybindings still pass.
 
-### M15 — Bench + polish + v2.0.0
-**Branch:** `feat/release-v2` · **Depends on:** M10–M14 all merged
+### M15 — Hardening: protected mode + atomic keyspace ops (the earned 2.0.0)
+**Branch:** `feat/hardening` · **Depends on:** M12 (protected mode gates on `requirepass`; auth must exist) · **ADR:** protected-mode default + atomic keyspace ops
+*(This milestone is what turns `2.0.0` from an epoch bump into a semver-earned major: one deliberate breaking change + one correctness fix.)*
+- **Protected mode — the deliberate breaking change.** By default the server refuses to *start* when bound to a non-loopback address with neither `requirepass` nor TLS configured; it exits non-zero with a clear message pointing at the fix. Opt out with `-protected-mode no` (or `-protected-mode off`). This flips v1's implicit "binds anywhere, serves anyone" contract — the change that makes the major honest. Loopback binds and auth'd/TLS binds are unaffected.
+- **Atomic `RENAME` / `RENAMENX` / `COPY`** — promoted from the v2.x backlog into committed scope. A single store-mutex-guarded operation, not the racy `GET`+`SET`+`DEL` dance. `RENAME` overwrites the destination; `RENAMENX` fails with `:0` if the destination exists; `COPY src dst [REPLACE]`. TTL and value type (string/list/hash from M11) travel with the key. **No AOF format bump** — these are new mutating commands recorded verbatim like `DEL`, replayed deterministically; the v3 format from M11 is untouched.
+- **Owned risk test:** (1) **protected-mode bind refusal** — a server started on a non-loopback addr with no auth exits non-zero with the documented error; the same bind with `requirepass`, TLS, a loopback addr, or `-protected-mode no` starts cleanly. (2) **concurrent-rename atomicity** — N goroutines `RENAME` the same source key; exactly one succeeds, no torn intermediate state, race detector clean, and the surviving key keeps its TTL and type.
+- **Exit:** non-loopback + no-auth bind refuses to start (override works and is logged); `RENAME`/`RENAMENX`/`COPY` match Redis semantics incl. TTL preservation; crash-restart replays renames from the AOF with no format change.
+
+### M16 — Bench + polish + v2.0.0
+**Branch:** `feat/release-v2` · **Depends on:** M10–M15 all merged
 - Re-run `make bench` with typed workloads; README records the new numbers.
-- README + [SECURITY](./SECURITY.md) update — auth/TLS lifts the localhost-only ceiling; document the new posture.
-- PRD / HLD / LLD deltas for types, RESP3, and auth.
-- ADR reconciliation: the four v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS) are each written **after** their owning milestone merges (M10/M11/M12) per [`docs/adr/README.md`](./adr/README.md); M15 only verifies all four have landed and the index is current — it does not batch-write them at release time.
+- README + [SECURITY](./SECURITY.md) update — auth/TLS + protected mode lift the localhost-only ceiling; document the new "deployable, safe-by-default" posture and the protected-mode override.
+- PRD / HLD / LLD deltas for types, RESP3, auth, and protected mode.
+- ADR reconciliation: the **five** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, protected-mode default + atomic keyspace ops) are each written **after** their owning milestone merges (M10/M11/M12/M15) per [`docs/adr/README.md`](./adr/README.md); M16 only verifies all five have landed and the index is current — it does not batch-write them at release time.
+- **Release-hardening gate (must all pass before the tag):**
+  - Fix or deliberately quarantine the flaky `TestAOF_CrashInjection_DuringRewrite/late-kill` — no known-flaky crash-durability test at release.
+  - Fix `.golangci.yml` (add the `version:` schema key) so `make lint` runs in CI again — a release must not ship with a non-functional lint gate.
+  - **Security review** of the M12 auth/TLS + M15 protected-mode surface: timing-safe password compare, no command execution before auth, TLS cert/key handling and drain, protected-mode bypass audit.
+  - **Explicit v1→v2 AOF upgrade test** — load a real v1/v2 AOF file written by a v1 binary and verify in-place replay under the v3 reader.
+  - Confirm the `2.0.0` call is earned (protected mode is the breaking change) and record it in the release notes.
 - Goreleaser reused from v1; tag `v2.0.0`.
 
 ### v2.x backlog (not in committed scope)
 
-Deferred from the committed M10–M15 cut so v2 stays a focused "usable single-node" release, not a Redis re-implementation:
+Deferred from the committed M10–M16 cut so v2 stays a focused "usable single-node" release, not a Redis re-implementation:
 
 | Theme | Item | Note |
 |---|---|---|
 | Observability | Prometheus `/metrics` endpoint behind `-metrics-addr` | Real-world deploys need RED metrics; not required for "usable single-node" |
-| Wire | `RENAME`, `RENAMENX`, `COPY` | Atomic edits — currently racy via `GET`+`SET`+`DEL` |
 | Persistence | RDB snapshots alongside AOF (opt-in, `-rdb-interval`) | Faster cold starts on large datasets |
 | Reliability | `-aof-truncate` flag to repair partial tails | Operationally important once auth lifts the deployment ceiling |
 | Content | Hashnode post: *"Three persistence policies, one append-only file"* | Owed since v1 — write after v2 ships, not before |
 | Integration | `prajwal-resilience-kit` Redis-adapter test target | First external consumer; validates AUTH + commands |
 
-**Breaking risk:** AOF format bump to **v3** to encode list/hash records → version-gated, replays v1, v2, and v3 records (M11). RESP3 is wire-only and never touches the AOF format.
+**Breaking risk:** two, both deliberate and documented. (1) AOF format bump to **v3** to encode list/hash records → version-gated, replays v1, v2, and v3 records (M11). (2) **Protected mode** (M15) refuses a non-loopback bind without auth — a behavioural break to v1's deployment contract, overridable via `-protected-mode no`. This is the change that earns the `2.0.0` major; RESP3 is wire-only and additive and never forces it.
 
-**Cut criteria:** AUTH + TLS + lists + hashes + `INFO` + `SCAN` + RESP3 shipped, each with a corresponding ADR.
+**Cut criteria:** RESP3 + lists + hashes + AUTH + TLS + `INFO` + `SCAN` + **protected mode** + **atomic `RENAME`/`RENAMENX`/`COPY`** shipped, each feature area with a corresponding ADR, and the M16 release-hardening gate (flaky-test fix, lint config, security review, v1→v2 AOF upgrade test) all green.
 
 ## v3.0 — Distributed (the `tinyraft` payoff)
 
@@ -248,10 +267,10 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | Option | Trajectory | When this is right |
 |---|---|---|
 | **A — ship v1, stop** | v2 and v3 stay aspirational; tracked here as backlog only | Spec-faithful. Project ships as the long-weekend artefact it was meant to be |
-| **B — v1 → v2** | Run the M10–M15 arc (RESP3, types, AUTH/TLS, INFO/SCAN, TUI v2); stop at "complete usable single-node KV" | Realistic if v1 sees real (personal/test) usage and the gaps annoy. Minimal viable v2 is just AUTH+TLS (M12) — the rest is optional even within v2 |
+| **B — v1 → v2** | Run the M10–M16 arc (RESP3, types, AUTH/TLS, INFO/SCAN, TUI v2, hardening); stop at "complete usable single-node KV" | Realistic if v1 sees real (personal/test) usage and the gaps annoy. Minimal viable v2 is AUTH+TLS + protected mode (M12 + the M15 protected-mode bullet) — the rest is optional even within v2 |
 | **C — v1 → v3 (skip or trim v2)** | Jump to the Raft-distributed payoff — the actual downstream dependency | Only once `ToyRaft` ships as a vendorable library. v3 is blocked on `ToyRaft` v1.0-rc1; v2 can be skipped or trimmed to AUTH+TLS if scope is tight, since downstream work needs v3 (multi-node), not v2 |
 
-**Decided 2026-07-13: Option B** — v1.0.0 has seen ~4 weeks of real use since the 2026-06-17 tag, and the gaps that matter (no auth, string-only values, `KEYS *`-only iteration) are worth closing. The full M10–M15 arc is now the committed active plan. The asymmetry the tracker records still holds: **v2 is polish; v3 is the real downstream dependency** — so Option C ("trim v2 to AUTH+TLS, jump to v3") stays live the moment `ToyRaft` ships as a vendorable library, and v2 can fall back to M12-only if scope tightens without abandoning the release.
+**Decided 2026-07-13: Option B** — v1.0.0 has seen ~4 weeks of real use since the 2026-06-17 tag, and the gaps that matter (no auth, string-only values, `KEYS *`-only iteration) are worth closing. The full M10–M16 arc is now the committed active plan. The asymmetry the tracker records still holds: **v2 is polish; v3 is the real downstream dependency** — so Option C ("trim v2 to AUTH+TLS, jump to v3") stays live the moment `ToyRaft` ships as a vendorable library, and v2 can fall back to M12-only if scope tightens without abandoning the release.
 
 ## Status tracking
 
@@ -272,7 +291,8 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M12 | AUTH + TLS | ⏳ Planned (committed) | — | `m12` |
 | M13 | INFO + SCAN | ⏳ Planned (committed) | — | `m13` |
 | M14 | TUI v2 | ⏳ Planned (committed) | — | `m14` |
-| M15 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
+| M15 | Hardening: protected mode + atomic keyspace ops | ⏳ Planned (committed) | — | `m15` |
+| M16 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
 
 ## Changes from the previous roadmap
 
@@ -280,11 +300,12 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 - **Risk tests moved upstream:** each milestone owns its own crash-injection / concurrent-stress test. M3 owns the durability crash test. M4 owns the TTL race test. M5 owns the rewrite-during-writes crash test. M8 becomes pure end-to-end protocol compat instead of the catch-all for everything risky.
 - **M2 explicitly owns a concurrent stress test** (was: just unit tests).
 
-**v2 additions (M10–M15):**
+**v2 additions (M10–M16):**
 
 - **RESP3 pulled forward v3.0 → v2.0.** RESP3 was originally a v3 wire item; it moves up to M10 as the v2 wire foundation so the type work (M11) exercises its map/set replies as a real second use case. v3 pub/sub then reuses the push frames rather than owning the protocol break.
 - **Pub/sub stays v3.** Only the RESP3 transport moves to v2; `SUBSCRIBE`/`PUBLISH` and keyspace notifications remain v3.
 - **`TYPE` folded into the types milestone (M11)** rather than the loose wire-completeness list — it's practically required once keys are typed (TUI + `SCAN` depend on it).
 - **Single AOF bump this cycle (v3), owned by M11** — mirrors v1's discipline of one focused format change per milestone that needs it.
 - **v2 is now committed (decided 2026-07-13).** The earlier draft framed the whole M10–M15 arc as "proposed, optional — not committed." After ~4 weeks of v1.0.0 in real use, the trajectory decision is made: **Option B (v1 → v2), full arc.** The section header, banner, status table, and [Honest framing](#honest-framing--pick-one-trajectory) all reflect the commitment. The honest caveats are preserved but subordinated: minimal v2 = AUTH+TLS (M12) remains the fallback if scope tightens, and v3 (Raft, blocked on `ToyRaft`) is still the real downstream dependency.
-- **Per-milestone dependency + ADR ownership added.** Each of M10–M15 now names what it depends on and which ADR it owns (RESP3 negotiation → M10, tagged-union store + AOF v3 → M11, AUTH/TLS → M12), so ADRs are written after their owning milestone merges rather than batched at release (M15).
+- **Per-milestone dependency + ADR ownership added.** Each of M10–M16 now names what it depends on and which ADR it owns (RESP3 negotiation → M10, tagged-union store + AOF v3 → M11, AUTH/TLS → M12, protected-mode + atomic keyspace ops → M15), so ADRs are written after their owning milestone merges rather than batched at release (M16).
+- **New M15 "Hardening" milestone; release renumbered M15 → M16.** Added to *earn* the `2.0.0` tag rather than default to it. Everything in M10–M14 is additive (opt-in RESP3, backward-compatible AOF v3), so by semver alone the arc is a `1.x`. M15 introduces the one deliberate breaking change — **protected mode** (refuse a non-loopback bind without auth) — and promotes **atomic `RENAME`/`RENAMENX`/`COPY`** out of the v2.x backlog to close a real correctness gap (racy today). One breaking change + one correctness win, not feature-count padding. The v2 ADR set grows from four to five, the cut criteria add protected mode + atomic renames, and M16 gains an explicit release-hardening gate (flaky-test fix, `.golangci.yml` schema fix, security review of the auth/TLS/protected-mode surface, v1→v2 AOF upgrade test).
