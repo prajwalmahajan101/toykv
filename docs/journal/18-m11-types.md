@@ -1,7 +1,7 @@
 # 18 — M11: value types (lists + hashes, AOF v3)
 
 **Date:** 2026-07-13
-**Branch:** `feat/types` — 10 commits: `b82c000` (deque), `ed9ed7a` (tagged-union store), `290a4bc` (AOF v3 + header upgrade), `146c006` (list commands), `1ab5cc2` (hash commands + TYPE), `7609106` (typed rewrite snapshots), `c638b92` (typed crash injection), `11a9473` (go-redis e2e), `ead3823` (LLD/CHANGELOG), plus this docs commit (ADR-0012 + journal + roadmap flip). PR pending.
+**Branch:** `feat/types` → **[PR #28](https://github.com/prajwalmahajan101/toykv/pull/28)**, rebase-merged onto `main`. Commits on `main`: `a942b84` (deque), `6815006` (tagged-union store), `279dd47` (AOF v3 + header upgrade), `94cb511` (list commands), `7055467` (hash commands + TYPE), `90f06a1` (typed rewrite snapshots), `52b6aa1` (typed crash injection), `69840c4` (go-redis e2e), `6d1007f` (LLD/CHANGELOG), `64eca7a` (ADR-0012 + journal + roadmap flip), `bf19b17` (journal 17 back-fill). CI green on all 8 checks after one macOS-runner cache flake (gtar `File exists` during setup-go restore — infra, not tests; re-run passed) — and the flaky `late-kill` crash test held again.
 **Trigger:** The highest-blast-radius milestone of the v2 arc (see entry 16): store model goes typed, AOF takes its second format bump, and the milestone owns its crash test. ADR-0012 written with the code, per discipline.
 
 ## Decision / surprise
