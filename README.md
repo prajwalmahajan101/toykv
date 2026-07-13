@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml)
 
-> Single-node in-memory KV store in Go. RESP2 wire protocol, AOF persistence, TTL, companion CLI and TUI.
+> Single-node in-memory KV store in Go. RESP2 wire protocol (RESP3 opt-in via `HELLO 3`), AOF persistence, TTL, companion CLI and TUI.
 
 Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (append, replay, durable), toykv exercises the **map** pattern (in-memory, mutable, expirable). Two foundational network-server primitives, one Go module each.
 
@@ -10,7 +10,7 @@ Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (appen
 
 ## What it is
 
-- RESP2 wire protocol subset — `redis-cli` works against it.
+- RESP2 wire protocol subset — `redis-cli` works against it. RESP3 is opt-in via `HELLO 3` (`redis-cli -3`); RESP2 replies are unchanged.
 - AOF persistence with configurable `appendfsync` policy (`always` | `everysec` | `no`), plus `BGREWRITEAOF` compaction.
 - TTL with lazy + 1 Hz sweep eviction; expiry round-trips through AOF v2.
 - A line-oriented CLI (`toykv-cli`) — one-shot, REPL, and piped modes; modelled on `redis-cli`.
@@ -98,10 +98,11 @@ If your fresh clone doesn't carry the GIF yet, here's the static rendering:
 
 | Command | Arity | Reply | Notes |
 |---|---|---|---|
+| `HELLO [proto [AUTH user pass]]` | 0–4 | `%map` / `*array` | RESP3 handshake; `HELLO 3` opts in. RESP2 clients get the map as a flat array. See [ADR-0011](./docs/adr/0011-resp3-negotiation-and-protocol-state.md) |
 | `PING [msg]` | 0–1 | `+PONG` / `$bulk` | Echoes msg if given |
 | `ECHO msg` | 1 | `$bulk` | |
-| `GET key` | 1 | `$bulk` / `$-1` | Nil bulk if absent or expired |
-| `SET key value [EX s] [PX ms] [NX\|XX]` | 2–6 | `+OK` / `$-1` | Nil under `NX`/`XX` rejection |
+| `GET key` | 1 | `$bulk` / `$-1` / `_` | Nil if absent or expired (`_` on RESP3) |
+| `SET key value [EX s] [PX ms] [NX\|XX]` | 2–6 | `+OK` / `$-1` / `_` | Nil under `NX`/`XX` rejection (`_` on RESP3) |
 | `DEL key [key …]` | ≥1 | `:N` | Number of keys removed |
 | `EXISTS key [key …]` | ≥1 | `:N` | Counts duplicates |
 | `EXPIRE key seconds` | 2 | `:0` / `:1` | 0 if key missing |
