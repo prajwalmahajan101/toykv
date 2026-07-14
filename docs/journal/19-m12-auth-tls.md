@@ -1,7 +1,7 @@
 # 19 — M12: AUTH + TLS
 
 **Date:** 2026-07-15
-**Branch:** `feat/auth-tls` → **PR (number to be back-filled on merge)**. Ten planned commits, dependency-ordered: config/flags → connState auth field → dispatch gating → AUTH command → HELLO AUTH wiring → TLS listener → concurrent auth stress → e2e harness → e2e exit criteria → docs; plus ADR-0013 and this entry riding the same branch (user call: ADR + journal in-branch rather than post-merge this time).
+**Branch:** `feat/auth-tls` → **[PR #30](https://github.com/prajwalmahajan101/toykv/pull/30)**. Ten planned commits, dependency-ordered: config/flags → connState auth field → dispatch gating → AUTH command → HELLO AUTH wiring → TLS listener → concurrent auth stress → e2e harness → e2e exit criteria → docs; plus ADR-0013 and this entry riding the same branch (user call: ADR + journal in-branch rather than post-merge this time).
 **Trigger:** The two documented blockers to any networked deployment — no auth, plaintext transport (SECURITY.md's v1 threat-model rows read "**None.**"). Self-contained connection-layer work; the `connState` seam M10 built for exactly this purpose gets its payoff.
 
 ## Decision / surprise
