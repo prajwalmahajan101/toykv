@@ -254,8 +254,9 @@ func (w *Writer) Dir() string { return w.dir }
 
 // BeginRewrite arms side-buffer mode: every subsequent Append continues
 // to write to the canonical file *and* mirrors the same RESP bytes into
-// an in-memory side buffer. DrainAndSwap consumes that buffer after the
-// atomic rename. Returns an error if a rewrite is already in flight.
+// an in-memory side buffer. FinalizeRewrite folds that buffer into the
+// fresh file before it becomes canonical. Returns an error if a rewrite
+// is already in flight.
 //
 // The dual-write design (ADR-0005) keeps the canonical file durable and
 // consistent at every instant until the rename swaps it.
@@ -277,35 +278,89 @@ func (w *Writer) AbortRewrite() {
 	w.sideBuf = nil
 }
 
-// DrainAndSwap is called after the rewriter has fsynced the .tmp file
-// and atomically renamed it onto the canonical path. It:
-//  1. Closes the (now-unlinked) old fd so subsequent appends cannot
-//     hit the old inode.
-//  2. Opens the canonical path fresh in append mode.
-//  3. Writes the accumulated side-buffer bytes onto the new file and
-//     fsyncs (regardless of policy — the swap itself must be durable).
-//  4. Exits side-buffer mode.
+// FinalizeRewrite completes a rewrite atomically with respect to Append.
+// The rewriter calls it after writing the snapshot to tmpPath (fsynced,
+// closed). It holds the writer lock across the ENTIRE swap so no acked
+// write can be stranded in the old (about-to-be-unlinked) inode:
 //
-// canonicalPath must equal filepath.Join(w.dir, Filename); callers pass
-// it explicitly so the rewriter can choose its own filename layout in
-// tests.
-func (w *Writer) DrainAndSwap(canonicalPath string) error {
+//  1. Append the side buffer onto tmpPath and fsync it — so the fresh
+//     file holds snapshot + every acked append BEFORE it becomes
+//     canonical (this is the ordering that closes the crash window: a
+//     crash before the rename keeps the complete old file; a crash after
+//     it keeps the complete new file).
+//  2. Atomically rename tmpPath onto canonicalPath and fsync the dir.
+//  3. Swap the writer's fd from the old inode to the new canonical file.
+//  4. Exit side-buffer mode.
+//
+// Because the lock is held throughout, no Append can interleave between
+// the side-buffer capture and the fd swap. On return (success or error)
+// the writer has exited side-buffer mode. canonicalPath must equal
+// filepath.Join(w.dir, Filename); callers pass it explicitly so the
+// rewriter can choose its own filename layout in tests.
+func (w *Writer) FinalizeRewrite(tmpPath, canonicalPath string) (err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.sideBuf == nil {
-		return errors.New("aof: DrainAndSwap without BeginRewrite")
+		return errors.New("aof: FinalizeRewrite without BeginRewrite")
+	}
+	// Always leave side-buffer mode, even on error — a stuck sideBuf would
+	// dual-write forever and block the next rewrite.
+	defer func() { w.sideBuf = nil }()
+
+	// Flush any tail still buffered in the old file. Under FsyncAlways
+	// each Append already flushed+fsynced, so this is a no-op there; it
+	// matters for everysec/no, where the old file must be complete in
+	// case we crash before the rename.
+	if err := w.bw.Flush(); err != nil {
+		return fmt.Errorf("aof: flush before finalize: %w", err)
 	}
 
-	// Flush anything still buffered into the old (about-to-be-discarded)
-	// file. We don't fsync — the old inode is being unlinked anyway by
-	// the rename that already happened above us, so durability is moot.
-	if err := w.bw.Flush(); err != nil {
-		return fmt.Errorf("aof: flush before swap: %w", err)
+	// 1. Fold the side buffer into the fresh file and fsync it, so the
+	//    new file is complete before the rename makes it canonical.
+	tmp, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("aof: reopen tmp %s: %w", tmpPath, err)
 	}
+	if w.sideBuf.Len() > 0 {
+		if _, err := tmp.Write(w.sideBuf.Bytes()); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("aof: append side-buffer to tmp: %w", err)
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("aof: fsync tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("aof: close tmp: %w", err)
+	}
+
+	// 2. Atomic rename + dir fsync makes the complete file canonical.
+	if err := os.Rename(tmpPath, canonicalPath); err != nil {
+		return fmt.Errorf("aof: rename %s -> %s: %w", tmpPath, canonicalPath, err)
+	}
+	if afterRenameHook != nil {
+		afterRenameHook()
+	}
+	if err := fsyncDir(w.dir); err != nil {
+		// Rename already happened — the new file is canonical and complete.
+		// Swap the fd so later appends target it, then report the fsync.
+		if swapErr := w.swapTo(canonicalPath); swapErr != nil {
+			return fmt.Errorf("aof: fsync dir failed (%v) and fd swap failed: %w", err, swapErr)
+		}
+		return fmt.Errorf("aof: fsync dir: %w", err)
+	}
+
+	// 3. Swap the writer's fd off the old (now-unlinked) inode.
+	return w.swapTo(canonicalPath)
+}
+
+// swapTo closes the old fd and reopens canonicalPath in append mode so
+// subsequent appends target the new file. The caller must hold w.mu.
+func (w *Writer) swapTo(canonicalPath string) error {
 	if err := w.f.Close(); err != nil {
 		return fmt.Errorf("aof: close pre-swap fd: %w", err)
 	}
-
 	f, err := os.OpenFile(canonicalPath, os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("aof: open post-swap %s: %w", canonicalPath, err)
@@ -314,20 +369,7 @@ func (w *Writer) DrainAndSwap(canonicalPath string) error {
 	w.path = canonicalPath
 	w.bw = bufio.NewWriter(f)
 	w.rw = resp.NewWriter(w.bw)
-
-	if w.sideBuf.Len() > 0 {
-		if _, err := w.bw.Write(w.sideBuf.Bytes()); err != nil {
-			return fmt.Errorf("aof: write side-buffer: %w", err)
-		}
-		if err := w.bw.Flush(); err != nil {
-			return fmt.Errorf("aof: flush side-buffer: %w", err)
-		}
-	}
-	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("aof: fsync after swap: %w", err)
-	}
 	w.dirty = false
-	w.sideBuf = nil
 	return nil
 }
 
