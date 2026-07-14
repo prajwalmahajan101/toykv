@@ -23,6 +23,7 @@ type handler struct {
 // upper bound covers "SET k v NX EX 10" — 6 tokens including the verb.
 var commands = map[string]handler{
 	"HELLO":     {fn: cmdHello, minArgs: 1, maxArgs: 5},
+	"AUTH":      {fn: cmdAuth, minArgs: 2, maxArgs: 3},
 	"PING":      {fn: cmdPing, minArgs: 1, maxArgs: 2},
 	"ECHO":      {fn: cmdEcho, minArgs: 2, maxArgs: 2},
 	"GET":       {fn: cmdGet, minArgs: 2, maxArgs: 2},
