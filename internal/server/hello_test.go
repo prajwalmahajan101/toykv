@@ -37,7 +37,7 @@ func mapField(t *testing.T, v resp.Value, key string) resp.Value {
 
 func TestHello_NoArg_KeepsProto2(t *testing.T) {
 	s := setupServer(t)
-	cs := newConnState(7)
+	cs := newConnState(7, true)
 
 	got := s.dispatch(cs, argvOf("HELLO"))
 	if cs.proto != resp.Proto2 {
@@ -59,7 +59,7 @@ func TestHello_NoArg_KeepsProto2(t *testing.T) {
 
 func TestHello_Proto3_UpgradesConnection(t *testing.T) {
 	s := setupServer(t)
-	cs := newConnState(1)
+	cs := newConnState(1, true)
 
 	got := s.dispatch(cs, argvOf("HELLO 3"))
 	if cs.proto != resp.Proto3 {
@@ -72,7 +72,7 @@ func TestHello_Proto3_UpgradesConnection(t *testing.T) {
 
 func TestHello_Proto2_DowngradesBack(t *testing.T) {
 	s := setupServer(t)
-	cs := newConnState(1)
+	cs := newConnState(1, true)
 
 	s.dispatch(cs, argvOf("HELLO 3"))
 	got := s.dispatch(cs, argvOf("HELLO 2"))
@@ -87,7 +87,7 @@ func TestHello_Proto2_DowngradesBack(t *testing.T) {
 func TestHello_UnsupportedProto_NoProtoAndNoSwitch(t *testing.T) {
 	s := setupServer(t)
 	for _, arg := range []string{"HELLO 9", "HELLO 1", "HELLO abc", "HELLO 0"} {
-		cs := newConnState(1)
+		cs := newConnState(1, true)
 		got := s.dispatch(cs, argvOf(arg))
 		if got.Kind != resp.KindError || !strings.HasPrefix(got.Str, "NOPROTO") {
 			t.Fatalf("%q: got %+v, want NOPROTO error", arg, got)
@@ -100,7 +100,7 @@ func TestHello_UnsupportedProto_NoProtoAndNoSwitch(t *testing.T) {
 
 func TestHello_AuthClause_ErrorsWithoutRequirepass(t *testing.T) {
 	s := setupServer(t)
-	cs := newConnState(1)
+	cs := newConnState(1, true)
 
 	got := s.dispatch(cs, argvOf("HELLO 3 AUTH user pass"))
 	if got.Kind != resp.KindError || !strings.Contains(got.Str, "no password is set") {
@@ -116,7 +116,7 @@ func TestHello_MalformedAuthClause_SyntaxError(t *testing.T) {
 	s := setupServer(t)
 	// Valid protover but a broken AUTH tail (missing password / wrong verb).
 	for _, arg := range []string{"HELLO 3 AUTH user", "HELLO 3 NOTAUTH a b"} {
-		cs := newConnState(1)
+		cs := newConnState(1, true)
 		got := s.dispatch(cs, argvOf(arg))
 		if got.Kind != resp.KindError || !strings.Contains(got.Str, "Syntax error") {
 			t.Fatalf("%q: got %+v, want syntax error", arg, got)

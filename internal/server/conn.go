@@ -13,7 +13,7 @@ func (s *Server) handleConn(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	r := resp.NewReader(c)
 	w := resp.NewWriter(c)
-	cs := newConnState(s.connID.Add(1))
+	cs := newConnState(s.connID.Add(1), s.cfg.RequirePass == "")
 
 	for {
 		argv, err := r.ReadCommand()
