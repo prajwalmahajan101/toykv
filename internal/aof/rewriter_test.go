@@ -11,19 +11,29 @@ import (
 	"testing"
 )
 
-// collectReplay reads dir's AOF and returns each record's argv as a
-// fresh copy, so tests can assert on the post-rewrite contents.
-func collectReplay(t *testing.T, dir string) [][][]byte {
-	t.Helper()
+// replayRecords reads dir's AOF and returns each record's argv as a fresh
+// copy. Unlike collectReplay it takes no *testing.T, so it is safe to call
+// from a non-test goroutine (e.g. the rewrite hook in the durability
+// regression test).
+func replayRecords(dir string) ([][][]byte, error) {
 	var got [][][]byte
-	if _, err := Replay(dir, func(argv [][]byte) error {
+	_, err := Replay(dir, func(argv [][]byte) error {
 		cp := make([][]byte, len(argv))
 		for i, a := range argv {
 			cp[i] = append([]byte(nil), a...)
 		}
 		got = append(got, cp)
 		return nil
-	}); err != nil {
+	})
+	return got, err
+}
+
+// collectReplay reads dir's AOF and returns each record's argv as a
+// fresh copy, so tests can assert on the post-rewrite contents.
+func collectReplay(t *testing.T, dir string) [][][]byte {
+	t.Helper()
+	got, err := replayRecords(dir)
+	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
 	return got
@@ -195,6 +205,72 @@ func TestRewriter_ConcurrentAppendsSurviveSwap(t *testing.T) {
 	got = collectReplay(t, dir)
 	if len(got) != 7 || string(got[6][1]) != "after" {
 		t.Fatalf("post-swap append missing: %v", got)
+	}
+}
+
+// TestRewriter_CrashAfterRename_NewFileComplete is the durability
+// regression guard for the M5 dual-write swap (the flaky-crash bug fixed
+// alongside M12). Invariant: at the instant the fresh file is renamed onto
+// the canonical path, it must ALREADY contain every acked append made
+// during the rewrite. If the side buffer is drained only *after* the
+// rename, a crash in the [rename, drain] window loses acked writes that
+// lived solely in the old (now-unlinked) inode plus the in-memory side
+// buffer.
+//
+// The afterRenameHook replays the canonical file exactly as a restart
+// would; asserting the live append is present fails on the old
+// rename-before-drain ordering and passes on drain-before-rename.
+func TestRewriter_CrashAfterRename_NewFileComplete(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir, FsyncAlways)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	snapBase := []SnapshotCmd{{Argv: [][]byte{[]byte("SET"), []byte("snap"), []byte("S")}}}
+
+	released := make(chan struct{})
+	snapshotEntered := make(chan struct{})
+	var once sync.Once
+	r := NewRewriter(w, func() []SnapshotCmd {
+		once.Do(func() { close(snapshotEntered) })
+		<-released
+		return snapBase
+	})
+
+	// Capture what a restart would recover at the rename instant.
+	var recovered [][][]byte
+	var hookErr error
+	afterRenameHook = func() { recovered, hookErr = replayRecords(dir) }
+	defer func() { afterRenameHook = nil }()
+
+	rewriteErr := make(chan error, 1)
+	go func() { rewriteErr <- r.Rewrite(context.Background()) }()
+
+	<-snapshotEntered
+	// One acked append during the rewrite; it lands in the side buffer.
+	// It must survive a crash at the rename instant.
+	if err := w.Append([][]byte{[]byte("SET"), []byte("live"), []byte("L")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	close(released)
+	if err := <-rewriteErr; err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+
+	if hookErr != nil {
+		t.Fatalf("hook replay: %v", hookErr)
+	}
+	found := false
+	for _, rec := range recovered {
+		if len(rec) == 3 && string(rec[1]) == "live" && string(rec[2]) == "L" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("acked append 'live=L' absent from canonical file at the rename instant; "+
+			"recovered=%v — a crash in the [rename, drain] window would lose it", recovered)
 	}
 }
 

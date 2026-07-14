@@ -36,6 +36,13 @@ type Rewriter struct {
 	snapshot func() []SnapshotCmd
 }
 
+// afterRenameHook, when non-nil, is invoked immediately after the rewrite
+// renames the fresh file onto the canonical path and before the writer's
+// fd is swapped. Test-only (nil in production); the durability regression
+// test uses it to assert the canonical file is already complete at the
+// rename instant — i.e. a crash there loses no acked write.
+var afterRenameHook func()
+
 // NewRewriter returns a Rewriter bound to w. snapshot is invoked once
 // per Rewrite call to capture live state. snapshot must not retain
 // references to internal store memory — the server's bridge already
@@ -76,26 +83,16 @@ func (r *Rewriter) Rewrite(ctx context.Context) error {
 		return err
 	}
 
-	if err := os.Rename(tmpPath, canonicalPath); err != nil {
+	// FinalizeRewrite folds the side buffer into the .tmp, fsyncs it,
+	// renames it onto the canonical path, fsyncs the dir, and swaps the
+	// writer's fd — all under the writer's append lock so the fresh file
+	// is complete before it becomes canonical and no acked write is ever
+	// stranded in the old inode (ADR-0005 crash-invariant table).
+	if err := r.w.FinalizeRewrite(tmpPath, canonicalPath); err != nil {
+		// Pre-rename failure leaves an orphaned .tmp to clean up; post-
+		// rename the .tmp no longer exists, so this is a harmless ENOENT
+		// no-op and the canonical file is intact either way.
 		_ = os.Remove(tmpPath)
-		r.w.AbortRewrite()
-		return fmt.Errorf("aof: rename %s -> %s: %w", tmpPath, canonicalPath, err)
-	}
-
-	// fsync the parent directory so the rename survives a crash.
-	if err := fsyncDir(dir); err != nil {
-		// Rename already happened — the new file is canonical. The
-		// directory fsync failure is the operator's problem; report it
-		// but do not abort. The side-buffer must still be drained onto
-		// the new file or its writes are lost.
-		drainErr := r.w.DrainAndSwap(canonicalPath)
-		if drainErr != nil {
-			return fmt.Errorf("aof: fsync dir failed (%v) and drain failed: %w", err, drainErr)
-		}
-		return fmt.Errorf("aof: fsync dir: %w", err)
-	}
-
-	if err := r.w.DrainAndSwap(canonicalPath); err != nil {
 		return err
 	}
 	return nil
