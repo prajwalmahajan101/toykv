@@ -30,15 +30,16 @@ func cmdHello(s *Server, cs *connState, argv [][]byte) resp.Value {
 	}
 
 	// Optional [AUTH username password] clause. Only the exact 3-token
-	// form is valid; anything else is a syntax error.
+	// form is valid; anything else is a syntax error. Authentication must
+	// succeed before the protocol switch commits — a failed AUTH leaves
+	// both auth state and proto untouched.
 	if len(argv) > 2 {
 		if len(argv) != 5 || upperASCII(argv[2]) != "AUTH" {
 			return resp.Error("ERR Syntax error in HELLO")
 		}
-		// M10 ships no requirepass, so AUTH has nothing to check against —
-		// same error Redis returns. M12 replaces this branch with a real
-		// password check and only then commits the protocol switch.
-		return resp.Error("ERR Client sent AUTH, but no password is set.")
+		if v := authenticate(s, cs, argv[3], argv[4]); v.Kind == resp.KindError {
+			return v
+		}
 	}
 
 	cs.proto = proto
