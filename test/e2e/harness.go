@@ -6,9 +6,17 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"os/exec"
@@ -106,6 +114,13 @@ type ServerOpts struct {
 	Dir string
 	// AppendFsync is the -appendfsync flag. Defaults to "no" for test speed.
 	AppendFsync string
+	// RequirePass sets -requirepass. Readiness still probes via plaintext
+	// PING — PING is whitelisted for unauthenticated connections.
+	RequirePass string
+	// TLSCert / TLSKey set -tls-cert / -tls-key (paths to PEM files; see
+	// WriteSelfSignedPair). When set, readiness probes over TLS.
+	TLSCert string
+	TLSKey  string
 	// ExtraArgs are appended to the server command line.
 	ExtraArgs []string
 }
@@ -142,6 +157,12 @@ func StartServer(t *testing.T, opts ServerOpts) *Server {
 	}
 
 	args := []string{"-addr", addr, "-dir", dir, "-appendfsync", fsync, "-log-level", "warn"}
+	if opts.RequirePass != "" {
+		args = append(args, "-requirepass", opts.RequirePass)
+	}
+	if opts.TLSCert != "" || opts.TLSKey != "" {
+		args = append(args, "-tls-cert", opts.TLSCert, "-tls-key", opts.TLSKey)
+	}
 	args = append(args, opts.ExtraArgs...)
 
 	//nolint:gosec // G204: builtBinaries.Server is a path we built ourselves in TestMain.
@@ -154,7 +175,7 @@ func StartServer(t *testing.T, opts ServerOpts) *Server {
 		t.Fatalf("start server: %v", err)
 	}
 
-	if err := waitReady(addr, 3*time.Second); err != nil {
+	if err := waitReady(addr, 3*time.Second, opts.TLSCert != ""); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		t.Fatalf("server not ready on %s: %v\nstderr:\n%s", addr, err, s.stderr.String())
@@ -198,12 +219,24 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// waitReady dials addr and sends an inline PING until +PONG arrives or deadline.
-func waitReady(addr string, timeout time.Duration) error {
+// waitReady dials addr and sends an inline PING until +PONG arrives or
+// deadline. PING is whitelisted for unauthenticated connections, so the
+// probe works against a requirepass server. Against a TLS listener the
+// probe dials TLS (InsecureSkipVerify — test-only readiness, not a
+// chain-verification assertion).
+func waitReady(addr string, timeout time.Duration, useTLS bool) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		var conn net.Conn
+		var err error
+		if useTLS {
+			d := &net.Dialer{Timeout: 200 * time.Millisecond}
+			//nolint:gosec // G402: readiness probe against our own test server.
+			conn, err = tls.DialWithDialer(d, "tcp", addr, &tls.Config{InsecureSkipVerify: true})
+		} else {
+			conn, err = net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		}
 		if err != nil {
 			lastErr = err
 			time.Sleep(25 * time.Millisecond)
@@ -229,6 +262,49 @@ func waitReady(addr string, timeout time.Duration) error {
 		lastErr = errors.New("timed out waiting for +PONG")
 	}
 	return lastErr
+}
+
+// WriteSelfSignedPair generates a self-signed ECDSA certificate valid
+// for localhost/127.0.0.1 and writes cert.pem + key.pem into dir
+// (typically t.TempDir()). Real files, because the server flags and
+// redis-cli both take paths. Returns the two paths.
+func WriteSelfSignedPair(t *testing.T, dir string) (certFile, keyFile string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "toykv-e2e"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:              []string{"localhost"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return certFile, keyFile
 }
 
 // CLIResult is the captured outcome of one toykv-cli subprocess run.
