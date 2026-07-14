@@ -112,6 +112,62 @@ func TestHello_AuthClause_ErrorsWithoutRequirepass(t *testing.T) {
 	}
 }
 
+func TestHello_AuthClause_AuthenticatesAndUpgrades(t *testing.T) {
+	s := setupAuthServer(t, "s3cret")
+	cs := newConnState(1, false)
+
+	got := s.dispatch(cs, argvOf("HELLO 3 AUTH default s3cret"))
+	if got.Kind == resp.KindError {
+		t.Fatalf("got error %q, want handshake reply", got.Str)
+	}
+	if !cs.authenticated {
+		t.Fatal("connection not authenticated after successful HELLO AUTH")
+	}
+	if cs.proto != resp.Proto3 {
+		t.Fatalf("proto = %d, want 3 (switch commits after successful AUTH)", cs.proto)
+	}
+	// The gate is actually open now.
+	if r := s.dispatch(cs, argvOf("SET k v")); r.Kind == resp.KindError {
+		t.Fatalf("SET after HELLO AUTH: got error %q", r.Str)
+	}
+}
+
+func TestHello_AuthClause_WrongPassLeavesStateUntouched(t *testing.T) {
+	s := setupAuthServer(t, "s3cret")
+	for _, arg := range []string{"HELLO 3 AUTH default wrong", "HELLO 3 AUTH admin s3cret"} {
+		cs := newConnState(1, false)
+		got := s.dispatch(cs, argvOf(arg))
+		if got.Kind != resp.KindError || !strings.HasPrefix(got.Str, "WRONGPASS") {
+			t.Fatalf("%q: got %+v, want WRONGPASS error", arg, got)
+		}
+		if cs.authenticated {
+			t.Fatalf("%q: connection authenticated despite failed AUTH", arg)
+		}
+		if cs.proto != resp.Proto2 {
+			t.Fatalf("%q: proto changed to %d despite AUTH failure", arg, cs.proto)
+		}
+	}
+}
+
+func TestHello_AfterAuth_DoesNotDeauthenticate(t *testing.T) {
+	s := setupAuthServer(t, "s3cret")
+	cs := newConnState(1, false)
+
+	if r := s.dispatch(cs, argvOf("AUTH s3cret")); r.Kind == resp.KindError {
+		t.Fatalf("AUTH: %q", r.Str)
+	}
+	// A plain HELLO (any proto) must not clear auth state — Redis keeps
+	// the connection authenticated across handshakes.
+	for _, arg := range []string{"HELLO", "HELLO 3", "HELLO 2"} {
+		if r := s.dispatch(cs, argvOf(arg)); r.Kind == resp.KindError {
+			t.Fatalf("%q: %q", arg, r.Str)
+		}
+		if !cs.authenticated {
+			t.Fatalf("%q de-authenticated the connection", arg)
+		}
+	}
+}
+
 func TestHello_MalformedAuthClause_SyntaxError(t *testing.T) {
 	s := setupServer(t)
 	// Valid protover but a broken AUTH tail (missing password / wrong verb).
