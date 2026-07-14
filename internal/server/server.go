@@ -116,9 +116,10 @@ func New(cfg Config) (*Server, error) {
 // traffic without a second handler table.
 func (s *Server) replayApply(argv [][]byte) error {
 	// Replay never writes replies to a client, so the connState's proto is
-	// irrelevant; a zero-value throwaway suffices. HELLO is not a mutating
-	// command and never appears in the AOF, so it is never replayed.
-	reply := s.dispatch(&connState{}, argv)
+	// irrelevant, but it must be authenticated so NOAUTH gating never
+	// rejects a replayed record. HELLO is not a mutating command and never
+	// appears in the AOF, so it is never replayed.
+	reply := s.dispatch(&connState{authenticated: true}, argv)
 	if reply.Kind == resp.KindError {
 		return errors.New(reply.Str)
 	}
