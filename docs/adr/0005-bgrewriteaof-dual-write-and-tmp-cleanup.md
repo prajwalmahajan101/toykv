@@ -1,9 +1,24 @@
 # ADR-0005: BGREWRITEAOF — dual-write side buffer + atomic-rename swap
 
-- Status: Accepted
+- Status: Accepted (swap ordering corrected 2026-07-15 — see **Correction** below)
 - Date: 2026-06-12
 - Milestone: M5
 - PR: (to be filled on merge — PR B of the M5 series)
+
+> **Correction (M12, 2026-07-15).** The original design drained the side
+> buffer onto the new file *after* the rename. That left a real (narrow)
+> durability window: an acked write made during the rewrite lived only in
+> the old inode (fsynced) and the in-memory side buffer, and the rename
+> unlinked that old inode *before* the new file received those bytes — so
+> a SIGKILL in the `[rename, drain]` window lost acked writes. The
+> milestone-owned crash test caught this flakily (the window is small; it
+> widens under `-race` on CI). Fixed by reordering: the side buffer is now
+> folded into the `.tmp` and fsynced **before** the rename, with the whole
+> capture→rename→fd-swap held under the Writer's append lock so no append
+> can interleave. `DrainAndSwap` (post-rename) is replaced by
+> `FinalizeRewrite` (pre-rename fold). The strategy (B, dual-write) is
+> unchanged; only the swap ordering is corrected. The sections below are
+> updated to match; the superseded reasoning is called out inline.
 
 ## Context
 
@@ -21,9 +36,9 @@ Two reasonable strategies present themselves:
 
 ## Decision
 
-**Adopt strategy (B): dual-write side buffer + atomic rename + post-rename drain.**
+**Adopt strategy (B): dual-write side buffer + fold-into-tmp + atomic rename.**
 
-Single-sentence: *the AOF Writer keeps appending to the canonical file unchanged, while mirroring the same RESP bytes into an in-memory side buffer that the Rewriter drains onto the new file after the atomic rename swaps it into place.*
+Single-sentence: *the AOF Writer keeps appending to the canonical file unchanged, while mirroring the same RESP bytes into an in-memory side buffer that the Rewriter folds onto the fresh `.tmp` file — and fsyncs — before the atomic rename swaps it into place, so the file that becomes canonical is already complete.*
 
 Concretely (see `internal/aof/writer.go` and `internal/aof/rewriter.go`):
 
@@ -33,23 +48,30 @@ Rewriter.Rewrite:
   2. cmds := snapshotCallback()         ─ takes brief Store.Lock
   3. Open dir/toykv.aof.tmp, write v2 header + cmds, fsync, close
                                           (concurrent Appends → old file + side buffer)
-  4. rename(toykv.aof.tmp, toykv.aof)   ─ atomic on POSIX same-fs
-  5. fsync(dir)                          ─ rename durability
-  6. Writer.DrainAndSwap(canonical)     ─ close old fd, open new file,
-                                          replay side buffer onto it, fsync
+  4. Writer.FinalizeRewrite(tmp, canonical) ─ ALL under the Writer append lock:
+       a. append side buffer onto .tmp, fsync .tmp   (fresh file now complete)
+       b. rename(.tmp, toykv.aof)      ─ atomic on POSIX same-fs
+       c. fsync(dir)                    ─ rename durability
+       d. close old fd, open new file   ─ later appends target the new file
 ```
+
+The lock in step 4 blocks Appends for the duration of the swap, so the side
+buffer captured in (a) is final — nothing lands in the old inode after it.
 
 Crash invariants at each step:
 
-| Killed during | Canonical contents on disk | Side buffer | Restart behaviour |
-|---|---|---|---|
-| step 1 (after `BeginRewrite`) | unchanged old file | gone (in-memory) | normal v1 replay |
-| step 3 (writing `.tmp`) | unchanged old file | gone | startup unlinks stale `.tmp`; normal replay |
-| step 4 (before rename completes) | unchanged old file | gone | same |
-| step 4 (after rename completes) | new file (snapshot only) | gone | replay new file — but any post-snapshot writes that were also in the side buffer never reached disk |
-| step 5–6 | new file (snapshot only) | gone | same |
+| Killed during | Canonical contents on disk | Restart behaviour |
+|---|---|---|
+| step 1 (after `BeginRewrite`) | unchanged old file (+ live appends) | normal replay — complete |
+| step 3 (writing `.tmp`) | unchanged old file (+ live appends) | startup unlinks stale `.tmp`; replay — complete |
+| step 4a (folding side buffer into `.tmp`) | unchanged old file (+ live appends) | startup unlinks stale `.tmp`; replay old file — complete |
+| step 4b (before rename completes) | unchanged old file (+ live appends) | same — complete |
+| step 4b (after rename completes) | new file (snapshot **+ side buffer**) | replay new file — complete |
+| step 4c–4d | new file (snapshot + side buffer) | replay new file — complete |
 
-The "post-rename, pre-DrainAndSwap" window is the only one where acked-but-not-replayable writes can exist. We close it by holding `appendIfLive` synchronous with the AOF append under `FsyncAlways` *for the old file* (already true) — a kill during that window loses the same writes a kill of the unmodified M3 code would lose, no worse. The dual-write design specifically does **not** make this window worse than the M3 baseline.
+At **every** step the canonical path resolves to a *complete* file: pre-rename it is the old file, which received every acked append (fsynced under `FsyncAlways`); post-rename it is the new file, which received the side buffer and was fsynced *before* the rename. There is no window where an acked write exists only in an unlinked inode.
+
+> **Superseded reasoning (original M5 design).** The first cut renamed *before* draining the side buffer (`DrainAndSwap`), and this ADR argued the resulting `[rename, drain]` window was "no worse than the M3 baseline." That was wrong: the rename unlinks the old inode, so acked writes that lived only there plus the in-memory buffer were lost on a crash in that window — a regression the M3 single-file path never had. The reorder above (fold-before-rename, whole swap under the append lock) closes it; the deterministic guard is `TestRewriter_CrashAfterRename_NewFileComplete`.
 
 `.tmp` is **never canonical**. `aof.Open` unconditionally `os.Remove`s any `dir/toykv.aof.tmp` on startup — a leftover `.tmp` is always garbage from a previous crashed rewrite.
 
@@ -65,9 +87,10 @@ The "post-rename, pre-DrainAndSwap" window is the only one where acked-but-not-r
 - Memory overhead during rewrite = bytes of live appends from start-of-rewrite to drain. For toykv's single-RWMutex single-process design this is bounded by realistic client throughput × snapshot duration (sub-second for v1 working-set sizes). For larger datasets the side buffer would need to spill to disk; flagged as M5 follow-up work, not v1 scope.
 - Dual-write means each Append during a rewrite encodes RESP into a scratch buffer then copies into both `bw` and `sideBuf`. Allocation per append is one `bytes.Buffer`; measured cost is in the microseconds — acceptable for the duration of a rewrite.
 - The pre-swap fsync on the old file's mid-rewrite appends is wasted I/O — those bytes are about to be discarded with the unlinked inode. Accepted as the cost of "canonical-stays-valid-throughout."
+- `FinalizeRewrite` holds the append lock across the fold+rename+fd-swap, so client appends block for that span (reopen `.tmp`, write side buffer, fsync, rename, fsync dir, reopen canonical). Bounded by side-buffer size and a few fsyncs — sub-millisecond for v1 working sets, and the correct price for closing the durability window. Redis blocks briefly at the same swap point for the same reason.
 
 **Neutral.**
-- The Writer grows three new methods (`BeginRewrite`, `DrainAndSwap`, `AbortRewrite`) and one new field (`sideBuf *bytes.Buffer`). The mutex is the existing `w.mu` — no new locks.
+- The Writer grows three rewrite methods (`BeginRewrite`, `FinalizeRewrite`, `AbortRewrite`) plus a private `swapTo` helper and one new field (`sideBuf *bytes.Buffer`). The mutex is the existing `w.mu` — no new locks.
 - Snapshot semantics match `Keys` / `Get` at the snapshot instant: expired entries are evicted under the store's write lock as the snapshot materialises, so the rewrite cannot resurrect them.
 
 ## Alternatives considered
