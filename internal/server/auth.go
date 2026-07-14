@@ -11,6 +11,7 @@ import (
 // probe which part failed.
 const (
 	errWrongPass = "WRONGPASS invalid username-password pair or user is disabled."
+	//nolint:gosec // G101: a Redis wire error string, not a credential.
 	errNoPassSet = "ERR Client sent AUTH, but no password is set. Did you mean AUTH <username> <password>?"
 )
 
