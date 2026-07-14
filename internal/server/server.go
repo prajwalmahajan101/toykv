@@ -164,6 +164,11 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("server: listen %s: %w", s.cfg.Addr, err)
 	}
+	// TLS wraps the raw listener; everything downstream (accept loop,
+	// EMFILE backoff, drain) is listener-shape agnostic.
+	if s.cfg.TLS != nil {
+		l = tls.NewListener(l, s.cfg.TLS)
+	}
 	s.mu.Lock()
 	s.listener = l
 	s.mu.Unlock()
