@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-15
 - Milestone: M12
-- PR: (to be filled on merge)
+- PR: [#30](https://github.com/prajwalmahajan101/toykv/pull/30)
 
 ## Context
 
