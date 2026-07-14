@@ -88,9 +88,13 @@ func TestAuth_RedisCLI(t *testing.T) {
 	if got := runRedisCLI(t, s.Addr, "--no-auth-warning", "-a", "s3cret", "PING"); got != "PONG" {
 		t.Errorf("redis-cli -a s3cret PING = %q, want PONG", got)
 	}
-	// Wrong password is rejected.
-	if got := runRedisCLI(t, s.Addr, "--no-auth-warning", "-a", "wrong", "PING"); !strings.Contains(got, "WRONGPASS") {
-		t.Errorf("redis-cli -a wrong PING = %q, want WRONGPASS", got)
+	// Wrong password is rejected. Tested via an explicit AUTH command,
+	// not `-a wrong PING`: with -a, a failed AUTH only warns on stderr and
+	// the whitelisted PING still returns +PONG on stdout. AUTH's own
+	// error reply, by contrast, lands on stdout (same as the GET/NOAUTH
+	// case below).
+	if got := runRedisCLI(t, s.Addr, "AUTH", "wrong"); !strings.Contains(got, "WRONGPASS") {
+		t.Errorf("redis-cli AUTH wrong = %q, want WRONGPASS", got)
 	}
 	// Unauthenticated PING still PONGs (the deliberate whitelist).
 	if got := runRedisCLI(t, s.Addr, "PING"); got != "PONG" {
