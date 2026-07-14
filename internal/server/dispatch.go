@@ -73,6 +73,13 @@ func (s *Server) dispatch(cs *connState, argv [][]byte) resp.Value {
 		return resp.Error("ERR empty command")
 	}
 	name := upperASCII(argv[0])
+	// Auth gating precedes even the existence check — like Redis, an
+	// unauthenticated client learns nothing about the command table.
+	// The whitelist (incl. unauthenticated PING, a deliberate deviation
+	// from Redis that the roadmap mandates) is fixed by ROADMAP §M12.
+	if !cs.authenticated && name != "AUTH" && name != "HELLO" && name != "PING" {
+		return resp.Error("NOAUTH Authentication required.")
+	}
 	h, ok := commands[name]
 	if !ok {
 		return resp.Error(fmt.Sprintf("ERR unknown command '%s'", argv[0]))
