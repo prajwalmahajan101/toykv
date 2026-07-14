@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,8 @@ type Config struct {
 	FsyncPolicy aof.FsyncPolicy      // ignored when Dir == ""
 	NowFunc     func() time.Time     // optional; defaults to time.Now. Drives TTL command timestamps.
 	SweeperOpts store.SweeperOptions // optional; zero ⇒ store package defaults (1s / batch 20)
+	RequirePass string               // "" ⇒ no authentication; otherwise the AUTH password
+	TLS         *tls.Config          // nil ⇒ plaintext; otherwise wraps the listener
 }
 
 // Server is the TCP listener and command dispatcher.

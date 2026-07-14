@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,6 +28,9 @@ flags:
   -dir         string  data directory for the AOF (default "./data"; "" disables persistence)
   -appendfsync string  fsync policy: always|everysec|no (default "always")
   -log-level   string  log level: debug|info|warn|error (default "info")
+  -requirepass string  password clients must AUTH with ("" disables authentication)
+  -tls-cert    string  path to the TLS certificate (PEM); requires -tls-key
+  -tls-key     string  path to the TLS private key (PEM); requires -tls-cert
   -h, --help           show this help and exit
 `
 
@@ -37,6 +41,9 @@ func main() {
 		dir         = flag.String("dir", "./data", "data directory for the AOF; \"\" disables persistence")
 		appendfsync = flag.String("appendfsync", "always", "fsync policy: always|everysec|no")
 		logLevel    = flag.String("log-level", "info", "log level: debug|info|warn|error")
+		requirePass = flag.String("requirepass", "", "password clients must AUTH with; \"\" disables authentication")
+		tlsCert     = flag.String("tls-cert", "", "path to the TLS certificate (PEM); requires -tls-key")
+		tlsKey      = flag.String("tls-key", "", "path to the TLS private key (PEM); requires -tls-cert")
 	)
 	flag.Parse()
 
@@ -53,12 +60,20 @@ func main() {
 		os.Exit(2)
 	}
 
+	tlsConf, err := buildTLSConfig(*tlsCert, *tlsKey)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	s, err := server.New(server.Config{
 		Addr:        *addr,
 		Log:         log,
 		Store:       store.New(),
 		Dir:         *dir,
 		FsyncPolicy: policy,
+		RequirePass: *requirePass,
+		TLS:         tlsConf,
 	})
 	if err != nil {
 		log.Error("server init failed", "err", err)
@@ -73,6 +88,28 @@ func main() {
 		log.Error("server run failed", "err", err)
 		os.Exit(1)
 	}
+}
+
+// buildTLSConfig turns the -tls-cert / -tls-key flag pair into a
+// *tls.Config. Both empty means plaintext (nil config); exactly one set
+// is a configuration error surfaced before the server starts.
+func buildTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+	switch {
+	case certFile == "" && keyFile == "":
+		return nil, nil
+	case certFile == "":
+		return nil, errors.New("-tls-key given without -tls-cert")
+	case keyFile == "":
+		return nil, errors.New("-tls-cert given without -tls-key")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading TLS key pair: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 func parseLevel(s string) (slog.Level, error) {
