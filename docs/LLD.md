@@ -339,6 +339,8 @@ type Config struct {
     Dir         string         // /var/lib/toykv
     FsyncPolicy aof.FsyncPolicy
     LogLevel    slog.Level
+    RequirePass string         // M12: "" ⇒ no authentication
+    TLS         *tls.Config    // M12: nil ⇒ plaintext listener
 }
 
 type Server struct {
@@ -435,6 +437,59 @@ The "mutate then AOF" order is the durability contract: the operator gets `+OK` 
 | `EXPIRE` missing key | store | `:0` |
 | `SET NX` already-exists | store | `$-1` (nil) |
 | AOF write error | conn loop | conn dropped + log + process exit |
+| Gated command, unauthenticated (M12) | dispatcher | `-NOAUTH Authentication required.` |
+| Wrong password / non-`default` user (M12) | `authenticate` | `-WRONGPASS invalid username-password pair or user is disabled.` |
+| `AUTH` with no `requirepass` (M12) | `authenticate` | `-ERR Client sent AUTH, but no password is set. Did you mean AUTH <username> <password>?` |
+
+### 5.5 AUTH + TLS (M12)
+
+Per-connection auth state lives in `connState` (the M10 protocol-state
+struct), touched only by its connection's goroutine — no locking:
+
+```go
+type connState struct {
+    proto         resp.Proto // RESP2 until HELLO 3
+    id            uint64     // monotonic, echoed by HELLO
+    authenticated bool       // M12: pre-set true when RequirePass == ""
+}
+```
+
+A server with no `requirepass` marks every connection authenticated at
+accept, so dispatch gating stays a single condition, placed *before* the
+command-table lookup (an unauthenticated client learns nothing about the
+command table; unknown commands also get `-NOAUTH`):
+
+```go
+if !cs.authenticated && name != "AUTH" && name != "HELLO" && name != "PING" {
+    return resp.Error("NOAUTH Authentication required.")
+}
+```
+
+Unauthenticated `PING` is a deliberate deviation from Redis (which gates
+it), mandated by ROADMAP §M12 — the e2e harness readiness probe and
+load-balancer-style health checks depend on it (ADR-0013).
+
+`AUTH [username] password` and `HELLO … AUTH u p` share one
+`authenticate` helper: `crypto/subtle.ConstantTimeCompare` on the
+password, username must be `default`, and both failure modes return the
+same `-WRONGPASS` so a client cannot probe which part failed. In
+`cmdHello`, authentication commits *before* the protocol switch; a failed
+AUTH leaves both auth state and proto untouched (validate-before-mutate,
+ADR-0011). AOF replay uses a pre-authenticated throwaway `connState` so
+gating never rejects a replayed record.
+
+TLS wraps the raw listener in `Run` — everything downstream (accept
+loop, EMFILE backoff, ctx-cancel drain) is listener-shape agnostic:
+
+```go
+l, err := net.Listen("tcp", s.cfg.Addr)
+if s.cfg.TLS != nil { l = tls.NewListener(l, s.cfg.TLS) }
+```
+
+`main` builds the `*tls.Config` (`MinVersion: TLS12`) from the
+`-tls-cert`/`-tls-key` pair and exits 2 if only one is given. Config
+carries the `*tls.Config` rather than file paths so tests inject
+in-memory self-signed certs.
 
 ## 6. CLI (`internal/cli` + `cmd/toykv-cli`)
 
