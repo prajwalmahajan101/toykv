@@ -12,6 +12,24 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ### Added
 
+- Authentication (M12, tag `m12`): `-requirepass <pass>` server flag and
+  the `AUTH [username] password` command (single-user model; the only
+  valid username is `default`, matching Redis). `HELLO 3 AUTH default
+  <pass>` performs real verification — the protocol switch commits only
+  after a successful AUTH. Password comparison is constant-time
+  (`crypto/subtle`); error strings are Redis 7 byte-exact (`-WRONGPASS`,
+  `-NOAUTH`, the "no password is set" hint included) — see
+  [ADR-0013](./docs/adr/0013-auth-model-and-tls-termination.md).
+- Command gating (M12): with `requirepass` set, an unauthenticated
+  connection may run only `AUTH`, `HELLO`, and `PING`; everything else —
+  including unknown commands — returns `-NOAUTH Authentication required.`
+  before the dispatch table is consulted. Unauthenticated `PING` is a
+  deliberate, documented deviation from Redis (ROADMAP §M12).
+- TLS transport (M12): `-tls-cert` / `-tls-key` wrap the listener via
+  stdlib `crypto/tls` (min TLS 1.2). The flags must be given as a pair;
+  the server exits non-zero with a clear error otherwise. Composes with
+  `-requirepass` for the deployable posture; `redis-cli --tls --cacert`
+  round-trips.
 - Value types: lists and hashes (M11, tag `m11`). The store entry is now
   a tagged union (string / list / hash); lists ride a growable
   ring-buffer deque (O(1) pushes at both ends).

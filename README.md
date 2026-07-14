@@ -66,6 +66,19 @@ go install github.com/prajwalmahajan101/toykv/cmd/toykv@latest
 redis-cli -p 6390 PING
 ```
 
+Authenticated and/or TLS-terminated (M12):
+
+```sh
+./bin/toykv -addr :6390 -dir ./data -requirepass s3cret
+redis-cli -p 6390 -a s3cret PING          # AUTH; unauthenticated PING still works,
+                                          # everything else returns -NOAUTH
+
+./bin/toykv -addr :6390 -dir ./data -tls-cert cert.pem -tls-key key.pem
+redis-cli -p 6390 --tls --cacert cert.pem PING
+```
+
+`-tls-cert`/`-tls-key` must be given as a pair (min TLS 1.2). Both flags compose with `-requirepass` — see [SECURITY](./docs/SECURITY.md) for the deployment posture and [ADR-0013](./docs/adr/0013-auth-model-and-tls-termination.md) for the auth model.
+
 The TUI:
 
 ```sh
@@ -99,6 +112,7 @@ If your fresh clone doesn't carry the GIF yet, here's the static rendering:
 | Command | Arity | Reply | Notes |
 |---|---|---|---|
 | `HELLO [proto [AUTH user pass]]` | 0–4 | `%map` / `*array` | RESP3 handshake; `HELLO 3` opts in. RESP2 clients get the map as a flat array. See [ADR-0011](./docs/adr/0011-resp3-negotiation-and-protocol-state.md) |
+| `AUTH [user] password` | 1–2 | `+OK` / `-WRONGPASS` | Single-user model; only `default` is valid. Constant-time compare. See [ADR-0013](./docs/adr/0013-auth-model-and-tls-termination.md) |
 | `PING [msg]` | 0–1 | `+PONG` / `$bulk` | Echoes msg if given |
 | `ECHO msg` | 1 | `$bulk` | |
 | `GET key` | 1 | `$bulk` / `$-1` / `_` | Nil if absent or expired (`_` on RESP3) |
