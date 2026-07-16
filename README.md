@@ -128,8 +128,10 @@ If your fresh clone doesn't carry the GIF yet, here's the static rendering:
 | `INCR key` | 1 | `:N` | `-ERR` on non-integer / overflow |
 | `DECR key` | 1 | `:N` | Same |
 | `KEYS pattern` | 1 | `*N` | stdlib `filepath.Match` glob |
+| `SCAN cursor [MATCH pattern] [COUNT n]` | 1–5 | `*2` (cursor + `*N`) | Cursor-based keyspace iteration; `0` cursor starts, `0` reply ends. Large-keyspace alternative to `KEYS` |
 | `FLUSHDB` | 0 | `+OK` | |
 | `DBSIZE` | 0 | `:N` | |
+| `INFO [section]` | 0–1 | `$bulk` / `=verbatim` | `# Section\nkey:value` server introspection (verbatim on RESP3); optional section filter |
 | `BGREWRITEAOF` | 0 | `+OK` | Async; see [ADR-0005](./docs/adr/0005-bgrewriteaof-dual-write-and-tmp-cleanup.md) |
 
 Anything outside this table returns `-ERR unknown command`. Everything in this table is exercised by [`test/e2e/protocol_*_test.go`](./test/e2e/) on every CI run.
