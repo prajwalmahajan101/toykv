@@ -39,6 +39,11 @@ type entry struct {
 	list     *deque            // typeList
 	hash     map[string][]byte // typeHash
 	expireAt time.Time
+	// seq is the monotonic creation sequence stamped when the key is
+	// first created (absent→present). It is preserved across updates so a
+	// key keeps a stable position for SCAN's whole lifetime; SCAN's cursor
+	// is a seq value. Never zero for a live key (the counter starts at 1).
+	seq uint64
 }
 
 // expired reports whether the entry has an expiry set and now is at or

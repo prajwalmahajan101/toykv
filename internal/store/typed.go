@@ -68,7 +68,7 @@ func (s *Store) push(k string, vals [][]byte, front bool) (int, error) {
 	defer s.mu.Unlock()
 	e, ok := s.getForWrite(k)
 	if !ok {
-		e = entry{typ: typeList, list: &deque{}}
+		e = entry{typ: typeList, list: &deque{}, seq: s.nextSeq()}
 	} else if e.typ != typeList {
 		return 0, ErrWrongType
 	}
@@ -193,7 +193,7 @@ func (s *Store) HSet(k string, pairs ...[]byte) (int, error) {
 	defer s.mu.Unlock()
 	e, ok := s.getForWrite(k)
 	if !ok {
-		e = entry{typ: typeHash, hash: make(map[string][]byte, len(pairs)/2)}
+		e = entry{typ: typeHash, hash: make(map[string][]byte, len(pairs)/2), seq: s.nextSeq()}
 	} else if e.typ != typeHash {
 		return 0, ErrWrongType
 	}
