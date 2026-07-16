@@ -175,6 +175,19 @@ func Open(dir string, policy FsyncPolicy) (*Writer, error) {
 // Path returns the absolute path of the AOF file.
 func (w *Writer) Path() string { return w.path }
 
+// Size returns the current size of the canonical AOF file in bytes,
+// including any buffered-but-unflushed bytes so the figure reflects all
+// accepted appends regardless of fsync policy. Safe for concurrent use.
+func (w *Writer) Size() (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	fi, err := os.Stat(w.path)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size() + int64(w.bw.Buffered()), nil
+}
+
 // Append RESP-encodes argv as a command array, writes it, flushes the
 // buffer, and fsyncs per the configured policy. The reply path must
 // call Append before sending +OK so the durability contract holds.

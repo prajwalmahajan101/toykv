@@ -36,6 +36,7 @@ var commands = map[string]handler{
 	"SCAN":      {fn: cmdScan, minArgs: 2, maxArgs: 6},
 	"FLUSHDB":   {fn: cmdFlushDB, minArgs: 1, maxArgs: 1},
 	"DBSIZE":    {fn: cmdDBSize, minArgs: 1, maxArgs: 1},
+	"INFO":      {fn: cmdInfo, minArgs: 1, maxArgs: 2},
 	"EXPIRE":    {fn: cmdExpire, minArgs: 3, maxArgs: 3},
 	"PEXPIRE":   {fn: cmdPExpire, minArgs: 3, maxArgs: 3},
 	"PEXPIREAT": {fn: cmdPExpireAt, minArgs: 3, maxArgs: 3},
