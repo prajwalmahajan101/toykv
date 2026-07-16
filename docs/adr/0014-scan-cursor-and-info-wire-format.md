@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-16
 - Milestone: M13
-- PR: _`feat/info-scan` — pending_
+- PR: [#31](https://github.com/prajwalmahajan101/toykv/pull/31)
 
 ## Context
 
