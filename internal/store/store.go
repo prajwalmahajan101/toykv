@@ -3,6 +3,7 @@ package store
 import (
 	"math"
 	"path"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -49,6 +50,16 @@ type Store struct {
 	mu      sync.RWMutex
 	data    map[string]entry
 	nowFunc func() time.Time
+	// seqCounter assigns each newly created key a strictly increasing
+	// sequence (see entry.seq). Guarded by mu — all writers hold Lock.
+	seqCounter uint64
+}
+
+// nextSeq returns the next creation sequence. Callers MUST hold the write
+// lock. The first value is 1, so a zero seq unambiguously means "unset".
+func (s *Store) nextSeq() uint64 {
+	s.seqCounter++
+	return s.seqCounter
 }
 
 // New constructs an empty Store backed by time.Now.
@@ -154,6 +165,70 @@ func (s *Store) Keys(pattern string) ([]string, error) {
 	return out, nil
 }
 
+// Scan iterates the keyspace incrementally using a stable
+// insertion-sequence cursor (entry.seq). Pass cursor 0 to start; the
+// returned next cursor feeds the following call, and a next of 0 signals
+// the iteration is complete.
+//
+// match is a path.Match glob applied to each examined key ("*" matches
+// all). count bounds how many keys are examined per call (a hint, Redis
+// COUNT semantics); count <= 0 uses the Redis default of 10. A bad
+// pattern returns path.ErrBadPattern.
+//
+// Guarantee: a key present for the entire iteration keeps its seq and is
+// therefore always reached, satisfying Redis's SCAN contract under
+// concurrent mutation. Keys created mid-iteration (higher seq) may or may
+// not appear; deleted keys simply vanish. Expired-but-unswept keys are
+// skipped (logically absent, same as Keys).
+func (s *Store) Scan(cursor uint64, match string, count int) (keys []string, next uint64, err error) {
+	if _, err := path.Match(match, ""); err != nil {
+		return nil, 0, err
+	}
+	if count <= 0 {
+		count = 10
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := s.nowFunc()
+
+	// Gather live keys strictly past the cursor, ordered by seq so the
+	// walk is deterministic and resumable regardless of Go map ordering.
+	type keyseq struct {
+		key string
+		seq uint64
+	}
+	cand := make([]keyseq, 0, len(s.data))
+	for k, e := range s.data {
+		if e.seq > cursor && !e.expired(now) {
+			cand = append(cand, keyseq{k, e.seq})
+		}
+	}
+	sort.Slice(cand, func(i, j int) bool { return cand[i].seq < cand[j].seq })
+
+	out := make([]string, 0, count)
+	examined := 0
+	var last uint64
+	for _, c := range cand {
+		if examined >= count {
+			break
+		}
+		examined++
+		last = c.seq
+		ok, err := path.Match(match, c.key)
+		if err != nil {
+			return nil, 0, err
+		}
+		if ok {
+			out = append(out, c.key)
+		}
+	}
+	// Examined every remaining candidate → iteration complete.
+	if examined >= len(cand) {
+		return out, 0, nil
+	}
+	return out, last, nil
+}
+
 // DBSize returns the count of keys in the store. It includes expired
 // keys that have not yet been swept — matches Redis semantics and
 // keeps the read on the RLock-only fast path.
@@ -194,7 +269,12 @@ func (s *Store) Set(k string, v []byte, opts SetOpts) bool {
 	copy(cp, v)
 	// SET overwrites regardless of the existing value's type (Redis
 	// semantics) — the whole entry is replaced, dropping any list/hash.
-	s.data[k] = entry{typ: typeString, str: cp, expireAt: opts.ExpireAt}
+	// Overwrite preserves the key's creation seq; a fresh key gets a new one.
+	seq := existing.seq
+	if !exists {
+		seq = s.nextSeq()
+	}
+	s.data[k] = entry{typ: typeString, str: cp, expireAt: opts.ExpireAt, seq: seq}
 	return true
 }
 
@@ -297,6 +377,7 @@ func (s *Store) incrBy(k string, delta int64) (int64, error) {
 	now := s.nowFunc()
 
 	var n int64
+	var seq uint64
 	if e, ok := s.data[k]; ok {
 		if e.expired(now) {
 			delete(s.data, k)
@@ -309,13 +390,17 @@ func (s *Store) incrBy(k string, delta int64) (int64, error) {
 				return 0, ErrNotInteger
 			}
 			n = parsed
+			seq = e.seq // preserve the key's creation seq across the update
 		}
 	}
 	if (delta > 0 && n > math.MaxInt64-delta) || (delta < 0 && n < math.MinInt64-delta) {
 		return 0, ErrOverflow
 	}
 	n += delta
-	s.data[k] = entry{typ: typeString, str: []byte(strconv.FormatInt(n, 10))}
+	if seq == 0 {
+		seq = s.nextSeq()
+	}
+	s.data[k] = entry{typ: typeString, str: []byte(strconv.FormatInt(n, 10)), seq: seq}
 	return n, nil
 }
 
