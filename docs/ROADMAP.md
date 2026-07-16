@@ -182,7 +182,7 @@ Two ordering decisions deserve calling out:
 - **Exit:** `redis-cli -a <pass>` authenticates and round-trips; wrong/absent password rejected; `redis-cli --tls --cert … --key …` completes a TLS handshake and round-trips.
 
 ### M13 — INFO + SCAN
-**Branch:** `feat/info-scan` · **Depends on:** M11 (`SCAN` iterates the typed keyspace; `TYPE` per key) + M10 (`INFO` served over the RESP3-aware writer) · **ADR:** none new — reuses RESP3 (M10) and store (M11) decisions
+**Branch:** `feat/info-scan` · **Depends on:** M11 (`SCAN` iterates the typed keyspace; `TYPE` per key) + M10 (`INFO` served over the RESP3-aware writer) · **ADR:** [0014](./adr/0014-scan-cursor-and-info-wire-format.md) — SCAN insertion-sequence cursor + INFO wire format (the earlier "none new" projection was revised: the seq-cursor is a real store-model contract, and the INFO wire-form correction pairs with it)
 - `INFO` — uptime, `dbsize`, `appendfsync` policy, AOF byte size, replay stats; served as the Redis-faithful `# Section\nkey:value` text — a **verbatim string** (`=`) on RESP3, a **bulk string** on RESP2. (Corrected 2026-07-16: the earlier draft said "RESP3 map." Real Redis never maps `INFO`, and a map breaks `go-redis .Info()` / `redis-cli info` parsing — the byte-compat the project has valued since M8.)
 - `SCAN cursor [MATCH pattern] [COUNT n]` — cursor-based iteration over the (now typed) keyspace; replaces `KEYS *` for large keyspaces.
 - **Owned risk test:** cursor-guarantee stress — a full `SCAN` loop under concurrent writes returns every key that was present for the entire scan (Redis's SCAN guarantee), with no crash on a stale cursor.
@@ -210,7 +210,7 @@ Two ordering decisions deserve calling out:
 - Re-run `make bench` with typed workloads; README records the new numbers.
 - README + [SECURITY](./SECURITY.md) update — auth/TLS + protected mode lift the localhost-only ceiling; document the new "deployable, safe-by-default" posture and the protected-mode override.
 - PRD / HLD / LLD deltas for types, RESP3, auth, and protected mode.
-- ADR reconciliation: the **five** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, protected-mode default + atomic keyspace ops) are each written **after** their owning milestone merges (M10/M11/M12/M15) per [`docs/adr/README.md`](./adr/README.md); M16 only verifies all five have landed and the index is current — it does not batch-write them at release time.
+- ADR reconciliation: the **six** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, SCAN cursor + INFO wire format, protected-mode default + atomic keyspace ops) are each written **after** their owning milestone merges (M10/M11/M12/M13/M15) per [`docs/adr/README.md`](./adr/README.md); M16 only verifies all six have landed and the index is current — it does not batch-write them at release time. (M13's ADR-0014 was added mid-cycle: the seq-cursor turned out to be a real architectural call, not the "no new ADR" the draft projected.)
 - **Release-hardening gate (must all pass before the tag):**
   - Fix or deliberately quarantine the flaky `TestAOF_CrashInjection_DuringRewrite/late-kill` — no known-flaky crash-durability test at release.
   - Fix `.golangci.yml` (add the `version:` schema key) so `make lint` runs in CI again — a release must not ship with a non-functional lint gate.
@@ -289,7 +289,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M10 | RESP3 wire upgrade | ✅ | [#26](https://github.com/prajwalmahajan101/toykv/pull/26) | `m10` |
 | M11 | Value types: lists + hashes (AOF v3) | ✅ | [#28](https://github.com/prajwalmahajan101/toykv/pull/28) | `m11` |
 | M12 | AUTH + TLS | ✅ | [#30](https://github.com/prajwalmahajan101/toykv/pull/30) | `m12` |
-| M13 | INFO + SCAN | ⏳ Planned (committed) | — | `m13` |
+| M13 | INFO + SCAN | ✅ | _see `feat/info-scan` PR_ | `m13` |
 | M14 | TUI v2 | ⏳ Planned (committed) | — | `m14` |
 | M15 | Hardening: protected mode + atomic keyspace ops | ⏳ Planned (committed) | — | `m15` |
 | M16 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
