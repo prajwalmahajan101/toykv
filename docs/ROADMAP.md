@@ -182,8 +182,8 @@ Two ordering decisions deserve calling out:
 - **Exit:** `redis-cli -a <pass>` authenticates and round-trips; wrong/absent password rejected; `redis-cli --tls --cert … --key …` completes a TLS handshake and round-trips.
 
 ### M13 — INFO + SCAN
-**Branch:** `feat/info-scan` · **Depends on:** M11 (`SCAN` iterates the typed keyspace; `TYPE` per key) + M10 (`INFO` as RESP3 map) · **ADR:** none new — reuses RESP3 (M10) and store (M11) decisions
-- `INFO` — uptime, `dbsize`, `appendfsync` policy, AOF byte size, replay stats; served as a RESP3 map when the client is on RESP3, a bulk string on RESP2.
+**Branch:** `feat/info-scan` · **Depends on:** M11 (`SCAN` iterates the typed keyspace; `TYPE` per key) + M10 (`INFO` served over the RESP3-aware writer) · **ADR:** none new — reuses RESP3 (M10) and store (M11) decisions
+- `INFO` — uptime, `dbsize`, `appendfsync` policy, AOF byte size, replay stats; served as the Redis-faithful `# Section\nkey:value` text — a **verbatim string** (`=`) on RESP3, a **bulk string** on RESP2. (Corrected 2026-07-16: the earlier draft said "RESP3 map." Real Redis never maps `INFO`, and a map breaks `go-redis .Info()` / `redis-cli info` parsing — the byte-compat the project has valued since M8.)
 - `SCAN cursor [MATCH pattern] [COUNT n]` — cursor-based iteration over the (now typed) keyspace; replaces `KEYS *` for large keyspaces.
 - **Owned risk test:** cursor-guarantee stress — a full `SCAN` loop under concurrent writes returns every key that was present for the entire scan (Redis's SCAN guarantee), with no crash on a stale cursor.
 - **Exit:** `INFO` fields match live server state; a `SCAN` loop enumerates the full keyspace; integration tests introspect server state via `INFO`.
