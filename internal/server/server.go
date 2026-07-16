@@ -49,9 +49,19 @@ type Server struct {
 	wg       sync.WaitGroup
 	closed   bool
 
+	// startTime is stamped at construction and drives INFO's uptime.
+	startTime time.Time
+	// replayStats captures the AOF replay result (records/bytes/duration)
+	// so INFO can report it. Zero value when persistence is disabled.
+	replayStats aof.ReplayStats
+
 	// connID assigns a monotonic id to each accepted connection, echoed
 	// in the HELLO handshake. Starts at 0; the first connection gets 1.
 	connID atomic.Uint64
+	// clientCount is the number of connections currently being served,
+	// reported by INFO as connected_clients. Incremented on accept,
+	// decremented when the connection goroutine exits.
+	clientCount atomic.Int64
 
 	// rewriteMu guards rewriteInFlight. Held only across the flag
 	// read-modify-write, never across the rewrite itself.
@@ -79,11 +89,12 @@ func New(cfg Config) (*Server, error) {
 		cfg.NowFunc = time.Now
 	}
 	s := &Server{
-		cfg:     cfg,
-		log:     cfg.Log,
-		store:   cfg.Store,
-		nowFunc: cfg.NowFunc,
-		sweeper: store.NewSweeper(cfg.Store, cfg.SweeperOpts),
+		cfg:       cfg,
+		log:       cfg.Log,
+		store:     cfg.Store,
+		nowFunc:   cfg.NowFunc,
+		sweeper:   store.NewSweeper(cfg.Store, cfg.SweeperOpts),
+		startTime: cfg.NowFunc(),
 	}
 
 	if cfg.Dir != "" {
@@ -94,6 +105,7 @@ func New(cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("server: aof replay: %w", err)
 		}
+		s.replayStats = stats
 		w, err := aof.Open(cfg.Dir, cfg.FsyncPolicy)
 		if err != nil {
 			return nil, fmt.Errorf("server: aof open: %w", err)
@@ -209,6 +221,8 @@ func (s *Server) Run(ctx context.Context) error {
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
+			s.clientCount.Add(1)
+			defer s.clientCount.Add(-1)
 			// Close the conn when ctx is cancelled so the read loop
 			// unblocks. handleConn will see the resulting error and exit.
 			done := make(chan struct{})
