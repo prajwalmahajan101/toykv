@@ -8,7 +8,7 @@ v1  M0 Skeleton ─► M1 RESP echo ─► M2 Store core ─► M3 AOF + crash �
 
 v2  M10 RESP3 ─► M11 Types (lists+hashes, AOF v3) ─► M12 AUTH/TLS ─►
     M13 INFO + SCAN ─► M14 TUI v2 ─► M15 Hardening (protected-mode + atomic ops) ─►
-    M16 Bench + polish ─► v2.0.0   (committed — active plan)
+    M16 Observability (OpenTelemetry → LGTM) ─► M17 Bench + polish ─► v2.0.0   (committed — active plan)
 ```
 
 ## Why this order — bottom-up + risk-first
@@ -122,15 +122,15 @@ Two ordering decisions deserve calling out:
 
 Make toykv usable beyond a learning demo: authenticated, **safe-by-default**, typed, observable, single-node. Same execution discipline as v1 — branch off `main`, merge via PR, **no direct commits to `main`** — and the same governing principle: **the highest-blast-radius surface ships and is crash-tested earliest, and each milestone owns its own risk test.**
 
-> **Earning the `2.0.0` tag (decided 2026-07-13).** Everything in M10–M14 is *additive* — RESP3 is opt-in, AOF v3 replays old formats — so by semver alone this work is a `1.x`, not a forced major. `2.0.0` is *earned*, not defaulted, by **M15's protected-mode change**: v1 served any bind with no auth; v2 refuses a non-loopback bind without auth unless explicitly overridden. That single deliberate break to the deployment contract is what makes the major honest. M15 also promotes **atomic `RENAME`/`RENAMENX`/`COPY`** out of the backlog — closing a real correctness gap (racy today via `GET`+`SET`+`DEL`) — so the release ships one breaking change and one correctness win, not a pile of additions hoping volume justifies the number.
+> **Earning the `2.0.0` tag (decided 2026-07-13).** Everything in M10–M14 and M16's observability is *additive* — RESP3 is opt-in, AOF v3 replays old formats, OpenTelemetry is off unless an endpoint is configured — so by semver alone this work is a `1.x`, not a forced major. `2.0.0` is *earned*, not defaulted, by **M15's protected-mode change**: v1 served any bind with no auth; v2 refuses a non-loopback bind without auth unless explicitly overridden. That single deliberate break to the deployment contract is what makes the major honest. M15 also promotes **atomic `RENAME`/`RENAMENX`/`COPY`** out of the backlog — closing a real correctness gap (racy today via `GET`+`SET`+`DEL`) — so the release ships one breaking change and one correctness win, not a pile of additions hoping volume justifies the number.
 
-> **Decision recorded 2026-07-13.** v1.0.0 shipped 2026-06-17; after ~4 weeks of real use the trajectory decision (previously deferred) is now made: **run the full M10–M16 arc — Option B (v1 → v2)**. See [Honest framing](#honest-framing--pick-one-trajectory).
+> **Decision recorded 2026-07-13.** v1.0.0 shipped 2026-06-17; after ~4 weeks of real use the trajectory decision (previously deferred) is now made: **run the full M10–M17 arc — Option B (v1 → v2)**. See [Honest framing](#honest-framing--pick-one-trajectory). *(Arc extended 2026-07-16: an observability milestone (M16) was inserted before the release; the release renumbered M16 → M17.)*
 >
 > The honest caveats still stand, subordinate to that commitment: the backlog tracker (`project-todo/projects/toykv.md`) records that a *minimal* v2 is **AUTH + TLS only**, and that **v3 (Raft-distributed) is the real downstream dependency** — blocked on `ToyRaft` shipping as a vendorable library. So if scope tightens mid-cycle, v2 can be trimmed back to M12 (AUTH+TLS) without abandoning the release; and jumping to v3 stays a live option the moment `ToyRaft` is ready.
 
 ### Why this order — bottom-up + risk-first (continued)
 
-Numbering continues the single v1 sequence (**M10–M16**); the release tag is `v2.0.0`.
+Numbering continues the single v1 sequence (**M10–M17**); the release tag is `v2.0.0`.
 
 | Risk | Severity | Owned by |
 |---|---|---|
@@ -143,13 +143,16 @@ Numbering continues the single v1 sequence (**M10–M16**); the release tag is `
 | SCAN cursor stability under concurrent mutation | Medium | M13 — cursor-guarantee stress |
 | Unsafe default exposure — a non-loopback bind serving unauthenticated | **High** | M15 — protected-mode bind-refusal test |
 | `RENAME` / `COPY` atomicity under concurrent mutation | Medium | M15 — concurrent-rename stress |
+| Instrumentation overhead + durability impact — spans/metrics must not slow the hot path or perturb the AOF ordering | Medium | M16 — off-by-default + no-regression / durability-unaffected test |
+| Telemetry export failure must never fail a command (exporter down ≠ client error) | Medium | M16 — same |
 | `INFO` field correctness | Low | M13 |
 
-Two ordering decisions deserve calling out:
+Four ordering decisions deserve calling out:
 
 1. **RESP3 (M10) before types (M11).** RESP3 is the wire foundation — additive, low store-blast-radius, opt-in via `HELLO 3`. Building the protocol-negotiation and type-tag plumbing first means types then exercise RESP3's map/set replies (`HGETALL` → map) as a real second use case — the same logic that put AOF before TTL in v1.
 2. **Types (M11) before AUTH (M12).** Types are the highest-blast-radius surface in v2 (store model + AOF format bump), so they ship and get crash-tested early. AUTH/TLS is self-contained connection-layer work that doesn't depend on the type system and can slot in once the risky format change is proven.
 3. **Hardening (M15) after AUTH (M12).** Protected mode gates on `requirepass` existing, so it can only land once M12 has shipped auth. It sits at M15 — after the feature milestones — because it is the *deliberate breaking change that earns the major*, and it reads most honestly as the last gate before the release milestone rather than buried inside M12. If v2 ever trims to the minimal AUTH+TLS cut, protected mode should be pulled forward into M12 — exposing auth without a safe default is the exact risk the minimal cut would otherwise ship.
+4. **Observability (M16) last, just before the release.** OpenTelemetry instruments the *whole* command / connection / persistence surface, so it lands after every surface it measures exists — instrumenting a moving target (M11 types, M12 auth spans, M15 rename ops) before those commands are final would mean re-instrumenting. It is fully additive (off unless an endpoint is configured), so it does **not** move the semver needle — M15 still earns the major. It sits before the M17 release rather than in the v2.x backlog because "deployable, safe-by-default, **observable** single node" is the stated v2 goal, and shipping the release without the three signals would leave the "observable" adjective unbacked.
 
 ---
 
@@ -205,35 +208,47 @@ Two ordering decisions deserve calling out:
 - **Owned risk test:** (1) **protected-mode bind refusal** — a server started on a non-loopback addr with no auth exits non-zero with the documented error; the same bind with `requirepass`, TLS, a loopback addr, or `-protected-mode no` starts cleanly. (2) **concurrent-rename atomicity** — N goroutines `RENAME` the same source key; exactly one succeeds, no torn intermediate state, race detector clean, and the surviving key keeps its TTL and type.
 - **Exit:** non-loopback + no-auth bind refuses to start (override works and is logged); `RENAME`/`RENAMENX`/`COPY` match Redis semantics incl. TTL preservation; crash-restart replays renames from the AOF with no format change.
 
-### M16 — Bench + polish + v2.0.0
-**Branch:** `feat/release-v2` · **Depends on:** M10–M15 all merged
+### M16 — Observability: OpenTelemetry (logs, metrics, traces) → LGTM
+**Branch:** `feat/observability` · **Depends on:** M10–M15 (instruments the full command / connection / persistence surface, so it lands once every command is final) · **ADR:** OpenTelemetry signal model + OTLP export + LGTM backend
+*(Fully additive — off unless an OTLP endpoint is configured — so it does not touch the semver story; M15 still earns the major. This is the milestone that makes the v2 goal-word "observable" actually true.)*
+- **The three signals via the OpenTelemetry SDK.** One `go.opentelemetry.io/otel` wiring — `TracerProvider` / `MeterProvider` / `LoggerProvider` — exporting **OTLP** (gRPC + HTTP) to an OpenTelemetry Collector that fans out to the Grafana **LGTM** stack: **L**oki (logs), **G**rafana (dashboards), **T**empo (traces), **M**imir (metrics). Off by default: no `-otel-endpoint` ⇒ no-op providers and zero hot-path cost.
+- **Logs → Loki.** An `slog.Handler` that also emits OTLP log records, so structured logs carry the active trace/span ID for correlation. Console `slog` stays the default when OTel is off; log shape is unchanged.
+- **Metrics → Mimir (RED per command).** Rate / errors / duration: a command-latency histogram and a call/error counter labelled by command, plus gauges for `connected_clients`, `dbsize`, AOF byte size, and `aof_rewrite_in_progress` — the same sources `INFO` (M13) already reads, now exported too. This **folds the v2.x-backlog "Prometheus `/metrics`" item** into OTLP (a Prometheus scrape exporter stays an option).
+- **Traces → Tempo.** A span per command dispatch (attributes: command, arity, proto, authenticated, reply kind), a parent span per connection lifecycle, and child spans for the store op and the AOF append/fsync — so a slow `everysec`/`always` fsync shows up as span latency. Context threads through `dispatch` alongside the existing `connState`.
+- **Config + local stack.** `-otel-endpoint`, `-otel-protocol` (grpc|http), `-otel-service-name`, and a sampling flag; a `deploy/` compose (or the single `grafana/otel-lgtm` image) for local viewing. Exporter failures are logged and dropped — **telemetry never fails a command**.
+- **Owned risk test:** (1) **no-op when disabled** — with no endpoint the providers are no-ops and a benchmark shows no measurable regression vs the pre-M16 binary; (2) **durability unaffected** — the M3/M11 crash-durability suite passes unchanged with instrumentation compiled in (span wrapping must not reorder mutate → append → fsync → reply); (3) **signal correctness** — against an in-memory/stdout exporter, one command yields exactly one dispatch span with the expected attributes, an error reply increments the error counter, and a log record carries the active trace ID; (4) **exporter-down resilience** — a dead OTLP endpoint never turns a successful command into a client error.
+- **Exit:** with `-otel-endpoint` set, traces/metrics/logs land in a local LGTM stack and correlate by trace ID in Grafana; with it unset, behaviour and benchmarks match the pre-M16 binary; the durability suite is green with instrumentation in place.
+
+### M17 — Bench + polish + v2.0.0
+**Branch:** `feat/release-v2` · **Depends on:** M10–M16 all merged
 - Re-run `make bench` with typed workloads; README records the new numbers.
-- README + [SECURITY](./SECURITY.md) update — auth/TLS + protected mode lift the localhost-only ceiling; document the new "deployable, safe-by-default" posture and the protected-mode override.
-- PRD / HLD / LLD deltas for types, RESP3, auth, and protected mode.
-- ADR reconciliation: the **six** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, SCAN cursor + INFO wire format, protected-mode default + atomic keyspace ops) are each written **after** their owning milestone merges (M10/M11/M12/M13/M15) per [`docs/adr/README.md`](./adr/README.md); M16 only verifies all six have landed and the index is current — it does not batch-write them at release time. (M13's ADR-0014 was added mid-cycle: the seq-cursor turned out to be a real architectural call, not the "no new ADR" the draft projected.)
+- README + [SECURITY](./SECURITY.md) update — auth/TLS + protected mode lift the localhost-only ceiling; document the new "deployable, safe-by-default, **observable**" posture, the protected-mode override, and the OpenTelemetry/LGTM setup.
+- PRD / HLD / LLD deltas for types, RESP3, auth, protected mode, and observability.
+- ADR reconciliation: the **seven** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, SCAN cursor + INFO wire format, protected-mode default + atomic keyspace ops, OpenTelemetry signal model + OTLP export) are each written **after** their owning milestone merges (M10/M11/M12/M13/M15/M16) per [`docs/adr/README.md`](./adr/README.md); M17 only verifies all seven have landed and the index is current — it does not batch-write them at release time. (M13's ADR-0014 was added mid-cycle: the seq-cursor turned out to be a real architectural call, not the "no new ADR" the draft projected.)
 - **Release-hardening gate (must all pass before the tag):**
   - Fix or deliberately quarantine the flaky `TestAOF_CrashInjection_DuringRewrite/late-kill` — no known-flaky crash-durability test at release.
   - Fix `.golangci.yml` (add the `version:` schema key) so `make lint` runs in CI again — a release must not ship with a non-functional lint gate.
   - **Security review** of the M12 auth/TLS + M15 protected-mode surface: timing-safe password compare, no command execution before auth, TLS cert/key handling and drain, protected-mode bypass audit.
   - **Explicit v1→v2 AOF upgrade test** — load a real v1/v2 AOF file written by a v1 binary and verify in-place replay under the v3 reader.
+  - **Observability no-regression check** — confirm OTel-off is a true no-op (benchmark parity with the pre-M16 binary) and the crash-durability suite is green with instrumentation compiled in.
   - Confirm the `2.0.0` call is earned (protected mode is the breaking change) and record it in the release notes.
 - Goreleaser reused from v1; tag `v2.0.0`.
 
 ### v2.x backlog (not in committed scope)
 
-Deferred from the committed M10–M16 cut so v2 stays a focused "usable single-node" release, not a Redis re-implementation:
+Deferred from the committed M10–M17 cut so v2 stays a focused "usable single-node" release, not a Redis re-implementation:
 
 | Theme | Item | Note |
 |---|---|---|
-| Observability | Prometheus `/metrics` endpoint behind `-metrics-addr` | Real-world deploys need RED metrics; not required for "usable single-node" |
+| Observability | Native Prometheus `/metrics` scrape endpoint behind `-metrics-addr` | RED metrics now ship via M16's OpenTelemetry → Mimir (OTLP push); a pull-based Prometheus scrape endpoint remains optional/deferred |
 | Persistence | RDB snapshots alongside AOF (opt-in, `-rdb-interval`) | Faster cold starts on large datasets |
 | Reliability | `-aof-truncate` flag to repair partial tails | Operationally important once auth lifts the deployment ceiling |
 | Content | Hashnode post: *"Three persistence policies, one append-only file"* | Owed since v1 — write after v2 ships, not before |
 | Integration | `prajwal-resilience-kit` Redis-adapter test target | First external consumer; validates AUTH + commands |
 
-**Breaking risk:** two, both deliberate and documented. (1) AOF format bump to **v3** to encode list/hash records → version-gated, replays v1, v2, and v3 records (M11). (2) **Protected mode** (M15) refuses a non-loopback bind without auth — a behavioural break to v1's deployment contract, overridable via `-protected-mode no`. This is the change that earns the `2.0.0` major; RESP3 is wire-only and additive and never forces it.
+**Breaking risk:** two, both deliberate and documented. (1) AOF format bump to **v3** to encode list/hash records → version-gated, replays v1, v2, and v3 records (M11). (2) **Protected mode** (M15) refuses a non-loopback bind without auth — a behavioural break to v1's deployment contract, overridable via `-protected-mode no`. This is the change that earns the `2.0.0` major; RESP3 is wire-only and additive and never forces it. **Observability (M16) adds no breaking risk** — it is off unless an OTLP endpoint is configured.
 
-**Cut criteria:** RESP3 + lists + hashes + AUTH + TLS + `INFO` + `SCAN` + **protected mode** + **atomic `RENAME`/`RENAMENX`/`COPY`** shipped, each feature area with a corresponding ADR, and the M16 release-hardening gate (flaky-test fix, lint config, security review, v1→v2 AOF upgrade test) all green.
+**Cut criteria:** RESP3 + lists + hashes + AUTH + TLS + `INFO` + `SCAN` + **protected mode** + **atomic `RENAME`/`RENAMENX`/`COPY`** + **OpenTelemetry (logs/metrics/traces)** shipped, each feature area with a corresponding ADR, and the M17 release-hardening gate (flaky-test fix, lint config, security review, v1→v2 AOF upgrade test, observability no-regression check) all green.
 
 ## v3.0 — Distributed (the `tinyraft` payoff)
 
@@ -267,10 +282,10 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | Option | Trajectory | When this is right |
 |---|---|---|
 | **A — ship v1, stop** | v2 and v3 stay aspirational; tracked here as backlog only | Spec-faithful. Project ships as the long-weekend artefact it was meant to be |
-| **B — v1 → v2** | Run the M10–M16 arc (RESP3, types, AUTH/TLS, INFO/SCAN, TUI v2, hardening); stop at "complete usable single-node KV" | Realistic if v1 sees real (personal/test) usage and the gaps annoy. Minimal viable v2 is AUTH+TLS + protected mode (M12 + the M15 protected-mode bullet) — the rest is optional even within v2 |
+| **B — v1 → v2** | Run the M10–M17 arc (RESP3, types, AUTH/TLS, INFO/SCAN, TUI v2, hardening, observability); stop at "complete usable single-node KV" | Realistic if v1 sees real (personal/test) usage and the gaps annoy. Minimal viable v2 is AUTH+TLS + protected mode (M12 + the M15 protected-mode bullet) — the rest is optional even within v2 |
 | **C — v1 → v3 (skip or trim v2)** | Jump to the Raft-distributed payoff — the actual downstream dependency | Only once `ToyRaft` ships as a vendorable library. v3 is blocked on `ToyRaft` v1.0-rc1; v2 can be skipped or trimmed to AUTH+TLS if scope is tight, since downstream work needs v3 (multi-node), not v2 |
 
-**Decided 2026-07-13: Option B** — v1.0.0 has seen ~4 weeks of real use since the 2026-06-17 tag, and the gaps that matter (no auth, string-only values, `KEYS *`-only iteration) are worth closing. The full M10–M16 arc is now the committed active plan. The asymmetry the tracker records still holds: **v2 is polish; v3 is the real downstream dependency** — so Option C ("trim v2 to AUTH+TLS, jump to v3") stays live the moment `ToyRaft` ships as a vendorable library, and v2 can fall back to M12-only if scope tightens without abandoning the release.
+**Decided 2026-07-13: Option B** — v1.0.0 has seen ~4 weeks of real use since the 2026-06-17 tag, and the gaps that matter (no auth, string-only values, `KEYS *`-only iteration) are worth closing. The full M10–M17 arc is now the committed active plan. The asymmetry the tracker records still holds: **v2 is polish; v3 is the real downstream dependency** — so Option C ("trim v2 to AUTH+TLS, jump to v3") stays live the moment `ToyRaft` ships as a vendorable library, and v2 can fall back to M12-only if scope tightens without abandoning the release.
 
 ## Status tracking
 
@@ -292,7 +307,8 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M13 | INFO + SCAN | ✅ | _see `feat/info-scan` PR_ | `m13` |
 | M14 | TUI v2 | ⏳ Planned (committed) | — | `m14` |
 | M15 | Hardening: protected mode + atomic keyspace ops | ⏳ Planned (committed) | — | `m15` |
-| M16 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
+| M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ⏳ Planned (committed) | — | `m16` |
+| M17 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
 
 ## Changes from the previous roadmap
 
@@ -300,12 +316,13 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 - **Risk tests moved upstream:** each milestone owns its own crash-injection / concurrent-stress test. M3 owns the durability crash test. M4 owns the TTL race test. M5 owns the rewrite-during-writes crash test. M8 becomes pure end-to-end protocol compat instead of the catch-all for everything risky.
 - **M2 explicitly owns a concurrent stress test** (was: just unit tests).
 
-**v2 additions (M10–M16):**
+**v2 additions (M10–M17):**
 
 - **RESP3 pulled forward v3.0 → v2.0.** RESP3 was originally a v3 wire item; it moves up to M10 as the v2 wire foundation so the type work (M11) exercises its map/set replies as a real second use case. v3 pub/sub then reuses the push frames rather than owning the protocol break.
 - **Pub/sub stays v3.** Only the RESP3 transport moves to v2; `SUBSCRIBE`/`PUBLISH` and keyspace notifications remain v3.
 - **`TYPE` folded into the types milestone (M11)** rather than the loose wire-completeness list — it's practically required once keys are typed (TUI + `SCAN` depend on it).
 - **Single AOF bump this cycle (v3), owned by M11** — mirrors v1's discipline of one focused format change per milestone that needs it.
 - **v2 is now committed (decided 2026-07-13).** The earlier draft framed the whole M10–M15 arc as "proposed, optional — not committed." After ~4 weeks of v1.0.0 in real use, the trajectory decision is made: **Option B (v1 → v2), full arc.** The section header, banner, status table, and [Honest framing](#honest-framing--pick-one-trajectory) all reflect the commitment. The honest caveats are preserved but subordinated: minimal v2 = AUTH+TLS (M12) remains the fallback if scope tightens, and v3 (Raft, blocked on `ToyRaft`) is still the real downstream dependency.
-- **Per-milestone dependency + ADR ownership added.** Each of M10–M16 now names what it depends on and which ADR it owns (RESP3 negotiation → M10, tagged-union store + AOF v3 → M11, AUTH/TLS → M12, protected-mode + atomic keyspace ops → M15), so ADRs are written after their owning milestone merges rather than batched at release (M16).
+- **Per-milestone dependency + ADR ownership added.** Each of M10–M17 now names what it depends on and which ADR it owns (RESP3 negotiation → M10, tagged-union store + AOF v3 → M11, AUTH/TLS → M12, SCAN cursor + INFO wire format → M13, protected-mode + atomic keyspace ops → M15, OpenTelemetry signal model → M16), so ADRs are written after their owning milestone merges rather than batched at release (M17).
 - **New M15 "Hardening" milestone; release renumbered M15 → M16.** Added to *earn* the `2.0.0` tag rather than default to it. Everything in M10–M14 is additive (opt-in RESP3, backward-compatible AOF v3), so by semver alone the arc is a `1.x`. M15 introduces the one deliberate breaking change — **protected mode** (refuse a non-loopback bind without auth) — and promotes **atomic `RENAME`/`RENAMENX`/`COPY`** out of the v2.x backlog to close a real correctness gap (racy today). One breaking change + one correctness win, not feature-count padding. The v2 ADR set grows from four to five, the cut criteria add protected mode + atomic renames, and M16 gains an explicit release-hardening gate (flaky-test fix, `.golangci.yml` schema fix, security review of the auth/TLS/protected-mode surface, v1→v2 AOF upgrade test).
+- **New M16 "Observability" milestone; release renumbered M16 → M17 (added 2026-07-16).** OpenTelemetry for the three signals — logs → **L**oki, metrics → **M**imir, traces → **T**empo, viewed in **G**rafana (the **LGTM** stack) — exported over OTLP. Fully additive and off unless an endpoint is configured, so it does **not** change the semver story (M15 still earns the major); it exists to make the v2 goal-word "observable" true rather than aspirational. It lands after every command surface is final (so instrumentation isn't chasing a moving target) and before the release. The v2 ADR set grows from six to seven (OpenTelemetry signal model + OTLP export, owned by M16), the cut criteria add the three signals, the release gate adds an OTel-off no-regression + durability-with-instrumentation check, and the v2.x-backlog "Prometheus `/metrics`" item is folded into M16's OTLP metrics (native scrape endpoint stays optional).
