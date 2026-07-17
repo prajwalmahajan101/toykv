@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/prajwalmahajan101/toykv/internal/client"
+	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/tui"
 )
 
@@ -28,9 +29,10 @@ usage:
 
 flags:
   -addr     string    server address (default "127.0.0.1:6390")
+  -a        string    password for AUTH (non-interactive; prompts on -NOAUTH otherwise)
   -refresh  duration  poll interval  (default 2s)
   -timeout  duration  connect timeout (default 5s)
-  -fsync    string    fsync label shown in the status bar (informational only)
+  -fsync    string    fsync label override for the status bar (INFO is used when available)
   -log      string    write structured logs to this file (default off)
   -h, --help          show this help and exit
 
@@ -66,9 +68,10 @@ func run(args []string, stdout, stderr io.Writer) (code int) {
 	fs.Usage = func() { fmt.Fprint(stdout, usage) }
 
 	addr := fs.String("addr", "127.0.0.1:6390", "server address")
+	pass := fs.String("a", "", "password for AUTH (non-interactive)")
 	refresh := fs.Duration("refresh", 2*time.Second, "poll interval")
 	timeout := fs.Duration("timeout", 5*time.Second, "connect timeout")
-	fsync := fs.String("fsync", "", "fsync label for status bar (informational)")
+	fsync := fs.String("fsync", "", "fsync label override for status bar (INFO used when available)")
 	logPath := fs.String("log", "", "write structured logs to this file (default off)")
 
 	if err := fs.Parse(args); err != nil {
@@ -111,6 +114,23 @@ func run(args []string, stdout, stderr io.Writer) (code int) {
 		return exitFatal
 	}
 	defer c.Close()
+
+	// Non-interactive AUTH: authenticate before the TUI starts so the
+	// first refresh doesn't trip -NOAUTH. When -a is absent the TUI
+	// prompts for a password on the first -NOAUTH reply instead.
+	if *pass != "" {
+		reply, err := c.Do("AUTH", *pass)
+		if err != nil {
+			fmt.Fprintf(stderr, "toykv-tui: AUTH: %v\n", err)
+			logger.Error("auth failed", "err", err.Error())
+			return exitFatal
+		}
+		if reply.Kind == resp.KindError {
+			fmt.Fprintf(stderr, "toykv-tui: AUTH: %s\n", reply.Str)
+			logger.Error("auth rejected", "err", reply.Str)
+			return exitFatal
+		}
+	}
 
 	model := tui.NewModel(c, *addr, *refresh, *fsync)
 	p := tea.NewProgram(model, tea.WithAltScreen())
