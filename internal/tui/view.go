@@ -83,35 +83,64 @@ func (m Model) leftWidth() int {
 
 func (m Model) rightWidth() int { return m.width - m.leftWidth() }
 
-// renderHeader draws the persistent context strip at the top.
+// fsyncDisplay is the fsync label the status bar shows: the -fsync
+// override when set, else the live appendfsync from INFO.
+func (m Model) fsyncDisplay() string {
+	if m.status.FsyncOverride != "" {
+		return m.status.FsyncOverride
+	}
+	return m.status.FsyncLabel
+}
+
+// renderHeader draws the persistent context strip at the top. dbsize,
+// fsync, uptime, and clients are driven by INFO (M14).
 func (m Model) renderHeader() string {
 	parts := []string{
 		m.st.header.Render("toykv"),
 		m.st.statusVal.Render(m.status.Addr),
 	}
-	if m.status.FsyncLabel != "" {
+	if fs := m.fsyncDisplay(); fs != "" {
 		parts = append(parts,
-			m.st.statusKey.Render("fsync=")+m.st.statusVal.Render(m.status.FsyncLabel))
+			m.st.statusKey.Render("fsync=")+m.st.statusVal.Render(fs))
 	}
 	parts = append(parts,
 		m.st.statusKey.Render("lat=")+m.st.statusVal.Render(formatLatency(m.status.Latency)),
 		m.st.statusKey.Render("dbsize=")+m.st.statusVal.Render(fmt.Sprintf("%d", m.status.DBSize)),
 	)
+	if m.status.Clients > 0 {
+		parts = append(parts,
+			m.st.statusKey.Render("clients=")+m.st.statusVal.Render(fmt.Sprintf("%d", m.status.Clients)))
+	}
+	if m.status.Uptime > 0 {
+		parts = append(parts,
+			m.st.statusKey.Render("up=")+m.st.statusVal.Render(formatUptime(m.status.Uptime)))
+	}
 	line := strings.Join(parts, "  ·  ")
 	return lipgloss.NewStyle().Width(m.width).Render(line)
 }
 
-// renderStatus is the single-line filter / mode echo just below the body.
+// renderStatus is the single-line filter / paging / mode echo just below
+// the body.
 func (m Model) renderStatus() string {
 	var parts []string
 	if m.filter != "" && m.filter != "*" {
-		parts = append(parts, m.st.statusKey.Render("filter=")+m.st.statusVal.Render(m.filter))
+		parts = append(parts, m.st.statusKey.Render("match=")+m.st.statusVal.Render(m.filter))
 	}
 	if m.mode == ModeConfirm {
 		parts = append(parts, m.st.warn.Render(m.prompt))
 	}
 	if len(parts) == 0 {
 		parts = append(parts, m.st.muted.Render(fmt.Sprintf("%d keys", len(m.keys))))
+	}
+	// Paging affordance: show the current page depth and whether more
+	// pages follow. Page 1 with no next page stays silent to avoid noise
+	// on small keyspaces.
+	if page := len(m.cursorStack) + 1; page > 1 || m.nextCursor != 0 {
+		ind := fmt.Sprintf("page %d", page)
+		if m.nextCursor != 0 {
+			ind += " →"
+		}
+		parts = append(parts, m.st.muted.Render(ind))
 	}
 	return lipgloss.NewStyle().Width(m.width).Render(strings.Join(parts, "  ·  "))
 }
@@ -351,18 +380,11 @@ func (m Model) colorizePretty(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// visibleKeys returns the filtered key slice the renderer iterates over.
+// visibleKeys returns the key slice the renderer iterates over. Filtering
+// is now server-side via SCAN MATCH (M14), so this is the page as-is; the
+// filter pattern is still used to highlight the matched span in each name.
 func (m Model) visibleKeys() []KeyInfo {
-	if m.filter == "" || m.filter == "*" {
-		return m.keys
-	}
-	out := make([]KeyInfo, 0, len(m.keys))
-	for _, k := range m.keys {
-		if globMatch(m.filter, k.Name) {
-			out = append(out, k)
-		}
-	}
-	return out
+	return m.keys
 }
 
 func (m Model) focusedKind() string {

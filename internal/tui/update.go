@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/prajwalmahajan101/toykv/internal/cmdparse"
@@ -14,7 +15,7 @@ import (
 // the first refreshMsg matches without a bump here.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchRefresh(m.client, m.filter, m.focused, m.fetchGen),
+		fetchRefresh(m.client, m.filter, m.pageCursor, m.pageCount, m.focused, m.fetchGen),
 		tickCmd(m.refresh, m.tickN+1),
 	)
 }
@@ -28,7 +29,38 @@ func (m Model) Init() tea.Cmd {
 // Any refreshMsg arriving with a stale gen is silently dropped by Update.
 func (m Model) scheduleFetch() (Model, tea.Cmd) {
 	m.fetchGen++
-	return m, fetchRefresh(m.client, m.filter, m.focused, m.fetchGen)
+	return m, fetchRefresh(m.client, m.filter, m.pageCursor, m.pageCount, m.focused, m.fetchGen)
+}
+
+// resetPaging returns to the first SCAN page. Called when the match
+// pattern changes or the keyspace is wiped (FLUSHDB), where prior
+// cursors are meaningless.
+func (m Model) resetPaging() Model {
+	m.pageCursor = 0
+	m.nextCursor = 0
+	m.cursorStack = nil
+	m.cursor = 0
+	return m
+}
+
+// enterAuthPrompt switches to the masked password prompt. Idempotent so a
+// burst of -NOAUTH replies (refresh + a pending mutation) doesn't wipe a
+// password the user is mid-way through typing.
+func (m Model) enterAuthPrompt() Model {
+	if m.mode == ModeAuth {
+		return m
+	}
+	m.mode = ModeAuth
+	m.prompt = "password: "
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.SetValue("")
+	m.input.Focus()
+	return m
+}
+
+// isNoAuth reports whether a reply error is the server's auth gate.
+func isNoAuth(errStr string) bool {
+	return strings.HasPrefix(errStr, "NOAUTH")
 }
 
 // Update is the Bubble Tea reducer. See LLD §7.3.
@@ -44,6 +76,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.tickN = msg.n
+		// While the password prompt is up, don't hammer the server with
+		// refetches that just re-trip -NOAUTH (and would clobber the
+		// half-typed password). Keep the tick chain alive.
+		if m.mode == ModeAuth {
+			return m, tickCmd(m.refresh, m.tickN+1)
+		}
 		return m.scheduleFetch()
 
 	case refreshMsg:
@@ -53,13 +91,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != "" {
-			m.err = "refresh: " + msg.err
 			// Clear value state — the underlying key may no longer exist.
 			m.hasVal = false
+			if isNoAuth(msg.err) {
+				m = m.enterAuthPrompt()
+			} else {
+				m.err = "refresh: " + msg.err
+			}
 		} else {
 			m.err = ""
 			m.keys = msg.keys
-			m.status.DBSize = msg.dbsize
+			m.nextCursor = msg.nextCursor
+			m.status.DBSize = msg.info.dbsize
+			m.status.Uptime = msg.info.uptime
+			m.status.Clients = msg.info.clients
+			m.status.FsyncLabel = msg.info.fsync
 			if m.cursor >= len(m.keys) {
 				m.cursor = len(m.keys) - 1
 				if m.cursor < 0 {
@@ -82,6 +128,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case replyMsg:
 		if msg.err != "" {
+			if isNoAuth(msg.err) {
+				m.status.Latency = msg.latency
+				return m.enterAuthPrompt(), nil
+			}
 			m.err = msg.err
 		} else {
 			m.err = ""
@@ -187,8 +237,32 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		return m.scheduleFetch()
+	case "]", "pgdown":
+		// Next SCAN page. nextCursor == 0 means this is the last page.
+		if m.nextCursor != 0 {
+			m.cursorStack = append(m.cursorStack, m.pageCursor)
+			m.pageCursor = m.nextCursor
+			m.cursor = 0
+			m.focused = ""
+			m.hasVal = false
+			m.valueScroll = 0
+			return m.scheduleFetch()
+		}
+		return m, nil
+	case "[", "pgup":
+		// Previous SCAN page, popped off the cursor stack.
+		if len(m.cursorStack) > 0 {
+			m.pageCursor = m.cursorStack[len(m.cursorStack)-1]
+			m.cursorStack = m.cursorStack[:len(m.cursorStack)-1]
+			m.cursor = 0
+			m.focused = ""
+			m.hasVal = false
+			m.valueScroll = 0
+			return m.scheduleFetch()
+		}
+		return m, nil
 	case "/":
-		return m.enterInput(ModeFilter, "filter (glob): ", m.filter), nil
+		return m.enterInput(ModeFilter, "match (glob): ", m.filter), nil
 	case "n":
 		return m.enterInput(ModeNewKV, "SET key value: ", ""), nil
 	case "e":
@@ -239,6 +313,10 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prompt = ""
 		switch action {
 		case ConfirmFlushDB:
+			// The keyspace is about to be emptied — prior page cursors are
+			// meaningless, so the post-flush refetch starts from page 0.
+			m = m.resetPaging()
+			m.focused = ""
 			return m, runMutating(m.client, true, "FLUSHDB")
 		case ConfirmDel:
 			return m, runMutating(m.client, true, "DEL", m.focused)
@@ -260,6 +338,7 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.prompt = ""
 		m.input.Blur()
 		m.input.SetValue("")
+		m.input.EchoMode = textinput.EchoNormal
 		return m, nil
 	case "enter":
 		return m.submitInput()
@@ -277,11 +356,19 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.prompt = ""
 	m.input.Blur()
 	m.input.SetValue("")
+	m.input.EchoMode = textinput.EchoNormal
 
 	switch mode {
+	case ModeAuth:
+		// Empty password: just dismiss the prompt.
+		if val == "" {
+			return m, nil
+		}
+		return m, authCmd(m.client, val)
 	case ModeFilter:
+		// A new match pattern invalidates the cursor stack — re-scan from 0.
 		m.filter = val
-		m.cursor = 0
+		m = m.resetPaging()
 		m.focused = ""
 		m.hasVal = false
 		return m.scheduleFetch()

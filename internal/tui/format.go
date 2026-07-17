@@ -39,6 +39,22 @@ func formatBytes(n int) string {
 	}
 }
 
+// formatUptime renders an uptime in seconds compactly for the status bar
+// (e.g. 45s, 12m, 3h, 5d). Coarse by design — the status bar wants a
+// glanceable magnitude, not a precise duration.
+func formatUptime(secs int64) string {
+	switch {
+	case secs < 60:
+		return fmt.Sprintf("%ds", secs)
+	case secs < 3600:
+		return fmt.Sprintf("%dm", secs/60)
+	case secs < 86400:
+		return fmt.Sprintf("%dh", secs/3600)
+	default:
+		return fmt.Sprintf("%dd", secs/86400)
+	}
+}
+
 // formatLatency renders the status-bar latency.
 func formatLatency(d time.Duration) string {
 	if d == 0 {

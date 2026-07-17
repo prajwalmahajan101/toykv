@@ -80,8 +80,8 @@ func TestRefreshMsg_PopulatesKeysAndCursor(t *testing.T) {
 	m.height = 20
 	m.width = 80
 	m, _ = runMsg(m, refreshMsg{
-		keys:   []KeyInfo{{Name: "a", TTL: -1}, {Name: "b", TTL: 60}},
-		dbsize: 2,
+		keys: []KeyInfo{{Name: "a", TTL: -1}, {Name: "b", TTL: 60}},
+		info: infoStatus{dbsize: 2},
 	})
 	if len(m.Keys()) != 2 {
 		t.Fatalf("keys not loaded: %+v", m.Keys())
@@ -252,7 +252,7 @@ func TestRefreshMsg_StaleGenIgnored(t *testing.T) {
 	m.height, m.width = 20, 100
 	// Seed with gen=1.
 	m, _ = runMsg(m, refreshMsg{
-		keys: []KeyInfo{{Name: "a"}, {Name: "b"}}, dbsize: 2, gen: 1,
+		keys: []KeyInfo{{Name: "a"}, {Name: "b"}}, info: infoStatus{dbsize: 2}, gen: 1,
 	})
 	if len(m.Keys()) != 2 {
 		t.Fatalf("seed not applied: %+v", m.Keys())
@@ -260,7 +260,7 @@ func TestRefreshMsg_StaleGenIgnored(t *testing.T) {
 	// Schedule a new fetch (bumps to gen=2), then deliver a stale gen=1 reply.
 	m, _ = m.scheduleFetch()
 	m, _ = runMsg(m, refreshMsg{
-		keys: []KeyInfo{{Name: "z"}}, dbsize: 99, gen: 1,
+		keys: []KeyInfo{{Name: "z"}}, info: infoStatus{dbsize: 99}, gen: 1,
 	})
 	if len(m.Keys()) != 2 || m.status.DBSize != 2 {
 		t.Errorf("stale gen=1 reply should be dropped; keys=%v dbsize=%d",
@@ -268,7 +268,7 @@ func TestRefreshMsg_StaleGenIgnored(t *testing.T) {
 	}
 	// Current gen reply lands.
 	m, _ = runMsg(m, refreshMsg{
-		keys: []KeyInfo{{Name: "z"}}, dbsize: 99, gen: m.fetchGen,
+		keys: []KeyInfo{{Name: "z"}}, info: infoStatus{dbsize: 99}, gen: m.fetchGen,
 	})
 	if len(m.Keys()) != 1 || m.Keys()[0].Name != "z" {
 		t.Errorf("current gen reply should land; got %+v", m.Keys())
@@ -280,7 +280,7 @@ func TestRefreshMsg_ErrClearsValueState(t *testing.T) {
 	m.height, m.width = 20, 100
 	// Populate, including a fetched value.
 	m, _ = runMsg(m, refreshMsg{
-		keys: []KeyInfo{{Name: "k"}}, dbsize: 1,
+		keys: []KeyInfo{{Name: "k"}}, info: infoStatus{dbsize: 1},
 		value:  resp.Bulk([]byte("hi")),
 		hasVal: true, gen: 1,
 	})

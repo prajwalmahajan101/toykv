@@ -28,6 +28,7 @@ const (
 	ModeExpire  // t: EXPIRE <focused> <seconds>
 	ModeRawCmd  // : raw RESP command
 	ModeConfirm // y/n prompt (FLUSHDB, DEL)
+	ModeAuth    // masked password prompt (triggered by -NOAUTH)
 )
 
 // ConfirmAction names which action a Confirm prompt commits to on "y".
@@ -39,12 +40,21 @@ const (
 	ConfirmDel
 )
 
+// Value-type labels, matching the server's TYPE replies. KindNone is the
+// reply for a key that no longer exists (raced away between SCAN and TYPE).
+const (
+	KindString = "string"
+	KindList   = "list"
+	KindHash   = "hash"
+	KindNone   = "none"
+)
+
 // KeyInfo is one row in the left pane.
 type KeyInfo struct {
 	Name string
 	TTL  int64  // -1 = no expiry, -2 = key missing (raced)
-	Size int    // bytes of stringified value; 0 if unknown
-	Kind string // RESP type label (currently always "string"; forward-compat)
+	Size int    // string: bytes; list/hash: element/field count
+	Kind string // TYPE label: string | list | hash | none ("" ⇒ unknown)
 }
 
 // Focus tracks which pane keystrokes are scoped to. Two-pane layouts
@@ -69,12 +79,18 @@ const (
 	LayoutTiny                     // < 60 cols or < 16 rows: too-small banner
 )
 
-// StatusLine aggregates the status bar fields.
+// StatusLine aggregates the status bar fields. DBSize, FsyncLabel,
+// Uptime, and Clients are refreshed from INFO each sweep; FsyncOverride
+// (from -fsync) wins when set so an operator can label a value INFO
+// cannot know (see ADR-0009 §4).
 type StatusLine struct {
-	Addr       string
-	DBSize     int64
-	FsyncLabel string // user-supplied via -fsync flag (see ADR-0009 §4)
-	Latency    time.Duration
+	Addr          string
+	DBSize        int64
+	FsyncLabel    string // live appendfsync from INFO
+	FsyncOverride string // -fsync flag; overrides FsyncLabel when non-empty
+	Uptime        int64  // uptime_in_seconds from INFO
+	Clients       int64  // connected_clients from INFO
+	Latency       time.Duration
 }
 
 // Model is the Bubble Tea model. See LLD §7.1.
@@ -84,10 +100,20 @@ type Model struct {
 
 	keys    []KeyInfo
 	cursor  int
-	filter  string // empty ⇒ "*"
+	filter  string // SCAN MATCH pattern; empty ⇒ "*"
 	focused string // name of cursor key, "" if list empty
 	value   resp.Value
 	hasVal  bool
+
+	// SCAN paging (M14). The keys pane shows one SCAN page at a time.
+	// pageCursor is the cursor that produced the current page; nextCursor
+	// is what that page's SCAN returned (0 ⇒ last page). cursorStack holds
+	// the cursors of prior pages so "[" can step back. pageCount is the
+	// SCAN COUNT hint. Filter change or FLUSHDB resets all of this to 0.
+	pageCursor  uint64
+	nextCursor  uint64
+	cursorStack []uint64
+	pageCount   int
 
 	mode    Mode
 	input   textinput.Model
@@ -108,21 +134,26 @@ type Model struct {
 	fetchGen uint64 // bumped before scheduling a fetch; replies with older gen are dropped
 }
 
+// defaultPageCount is the SCAN COUNT hint per keys-pane page. SCAN treats
+// COUNT as a hint, so a page holds roughly (not exactly) this many keys.
+const defaultPageCount = 50
+
 // NewModel constructs a fresh model bound to client and refresh interval.
-func NewModel(client Doer, addr string, refresh time.Duration, fsyncLabel string) Model {
+func NewModel(client Doer, addr string, refresh time.Duration, fsyncOverride string) Model {
 	ti := textinput.New()
 	ti.Prompt = "› "
 	ti.CharLimit = 0
 
 	return Model{
-		client:   client,
-		refresh:  refresh,
-		input:    ti,
-		mode:     ModeNormal,
-		status:   StatusLine{Addr: addr, FsyncLabel: fsyncLabel},
-		focus:    FocusLeft,
-		st:       newStyles(noColorEnv()),
-		fetchGen: 1, // first Init() refresh inherits gen=1; bumps happen on every scheduleFetch.
+		client:    client,
+		refresh:   refresh,
+		input:     ti,
+		mode:      ModeNormal,
+		status:    StatusLine{Addr: addr, FsyncOverride: fsyncOverride},
+		focus:     FocusLeft,
+		st:        newStyles(noColorEnv()),
+		pageCount: defaultPageCount,
+		fetchGen:  1, // first Init() refresh inherits gen=1; bumps happen on every scheduleFetch.
 	}
 }
 
