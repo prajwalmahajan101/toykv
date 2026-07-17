@@ -37,12 +37,16 @@ flags:
   -h, --help          show this help and exit
 
 keybindings (PRD §5.5):
-  j/k    move cursor             /    filter (client-side glob)
+  j/k    move cursor             /    match (server-side SCAN)
+  [ / ]  prev/next SCAN page     g/G  top/bottom
   n      SET new (key value)     e    edit focused value
   d      DEL focused (confirm)   t    EXPIRE focused (seconds)
   i      INCR focused            D    DECR focused
   F      FLUSHDB (confirm)       r    force refresh
   :      raw RESP prompt         q    quit
+
+If the server requires a password, the TUI prompts on the first -NOAUTH
+reply; pass -a to authenticate non-interactively at launch.
 `
 
 const (
