@@ -762,6 +762,18 @@ Two-pane Lipgloss layout:
 
 The TUI uses the shared `internal/client.Client` (defined in §6.7). The Bubble Tea tick fires a goroutine that calls `client.Do(...)` and emits messages back to the program via `tea.Cmd`. No TUI-private client type.
 
+### 7.6 M14 — TUI v2 (paging, types, auth, INFO status)
+
+The v1 sketch above (§7.1–7.4) predates the v2 surface. M14 lands the following deltas on the same Model/Update/View split and the same shared `internal/client` — no new client type, still RESP2.
+
+- **SCAN paging (replaces `KEYS *`).** The keys pane shows one `SCAN cursor MATCH pattern COUNT n` page at a time. `Model` carries `pageCursor` (cursor that produced the page), `nextCursor` (0 ⇒ last page), a `cursorStack []uint64` for back-nav, and `pageCount` (COUNT hint, default 50). `]`/`[` (or PgDn/PgUp) step forward/back; forward pushes `pageCursor` onto the stack and moves to `nextCursor`, back pops. A match-pattern change or `FLUSHDB` calls `resetPaging()` (cursor 0, empty stack) — prior cursors are meaningless after either. Page-back via the stack is a UX convenience, **not** a consistency guarantee; SCAN's own full-scan guarantee (ADR-0014) is what makes a start-to-finish walk complete.
+- **Server-side filter.** `/` now sets the `SCAN MATCH` pattern (`Model.filter`) instead of filtering a local slice; `visibleKeys()` returns the page as-is and the pattern is reused only to highlight the matched span in each name (`globLiterals`, retained). The old client-side `globMatch` (`glob.go`) is removed.
+- **Typed values.** Per-key `TYPE` populates `KeyInfo.Kind` (`string|list|hash|none`). The focused value is fetched by kind: `GET` (string), `LRANGE k 0 -1` (list), `HGETALL` (hash). The value pane renders a string as a quoted scalar, a list as numbered rows (shared `respfmt`), and a hash as aligned `field: value` rows (RESP2 `HGETALL` is a flat array, read two-at-a-time). `KeyInfo.Size` is bytes for a string, element/field count for a list/hash. Cost note: one `TYPE`+`TTL` per key per page — bounded by `COUNT`, not the whole keyspace; the single-conn client does not pipeline.
+- **INFO-driven status bar.** Each sweep issues `INFO`; `parseInfo` pulls `appendfsync`, `uptime_in_seconds`, `connected_clients`, and `db0:keys=` (dbsize) out of the verbatim body. `-fsync` becomes an override (`StatusLine.FsyncOverride`) that wins over the live value, rather than the sole source.
+- **AUTH.** `ModeAuth` is a masked (`EchoPassword`) prompt entered on any `-NOAUTH` reply (refresh or mutation). Submitting sends `AUTH <pass>`; the refresh tick pauses while the prompt is up so it cannot clobber a half-typed password. `-a` on the CLI authenticates non-interactively at launch. TLS dialing is **deferred** (v2.x backlog) — M14 connects over plain TCP + AUTH only.
+
+Owned risk test: `teatest` smokes for each type view, a multi-page paging scenario, and the `-NOAUTH` → prompt → authenticated flow (`cmd/toykv-tui/smoke_test.go`).
+
 ## 8. Concurrency invariants
 
 1. **One writer to AOF.** All `Writer.Append` calls go through `Writer.mu`.
@@ -820,9 +832,9 @@ These are wrapped with `fmt.Errorf("%w: ...")` at boundaries; conn handlers map 
 ## 12. Out-of-scope details (post-v1)
 
 - Multi-DB (`SELECT`).
-- `SCAN`/`HSCAN` cursors (would replace `KEYS *` in TUI).
+- ~~`SCAN`/`HSCAN` cursors~~ — `SCAN` shipped in M13; the TUI pages on it (M14, §7.6). `HSCAN` remains out of scope.
 - `CLIENT` family commands.
-- `INFO` reply (would be useful for TUI status bar — defer to v1.1).
+- ~~`INFO` reply~~ — shipped in M13; drives the TUI status bar (M14, §7.6).
 - Streaming replies (`XADD`/`XREAD`).
-- TLS transport.
-- ACL/auth.
+- ~~TLS transport~~ — server-side TLS shipped in M12; TUI-client TLS dialing is deferred (v2.x backlog).
+- ~~ACL/auth~~ — `requirepass`/`AUTH` shipped in M12; TUI prompts/authenticates (M14, §7.6). ACLs remain out of scope.
