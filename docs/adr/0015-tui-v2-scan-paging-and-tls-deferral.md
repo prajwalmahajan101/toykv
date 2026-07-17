@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-17
 - Milestone: M14
-- PR: _pending_ (`feat/tui-v2`)
+- PR: [#32](https://github.com/prajwalmahajan101/toykv/pull/32)
 
 ## Context
 

@@ -306,7 +306,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M11 | Value types: lists + hashes (AOF v3) | ✅ | [#28](https://github.com/prajwalmahajan101/toykv/pull/28) | `m11` |
 | M12 | AUTH + TLS | ✅ | [#30](https://github.com/prajwalmahajan101/toykv/pull/30) | `m12` |
 | M13 | INFO + SCAN | ✅ | [#31](https://github.com/prajwalmahajan101/toykv/pull/31) | `m13` |
-| M14 | TUI v2 | ✅ | _`feat/tui-v2` (PR pending)_ | `m14` |
+| M14 | TUI v2 | ✅ | [#32](https://github.com/prajwalmahajan101/toykv/pull/32) | `m14` |
 | M15 | Hardening: protected mode + atomic keyspace ops | ⏳ Planned (committed) | — | `m15` |
 | M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ⏳ Planned (committed) | — | `m16` |
 | M17 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
