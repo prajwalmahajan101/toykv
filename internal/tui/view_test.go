@@ -22,7 +22,7 @@ func TestView_PopulatedListAndStatus(t *testing.T) {
 	m, _ = runMsg(m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m, _ = runMsg(m, refreshMsg{
 		keys:   []KeyInfo{{Name: "alpha", TTL: -1}, {Name: "beta", TTL: 30}},
-		dbsize: 2,
+		info:   infoStatus{dbsize: 2},
 		value:  resp.Bulk([]byte("hello")),
 		hasVal: true,
 	})
