@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/respfmt"
 )
 
@@ -338,20 +339,52 @@ func (m Model) renderRight(w, h int) string {
 	if !m.hasVal {
 		b.WriteString(m.st.muted.Render("(loading…)"))
 	} else {
-		pretty := m.colorizePretty(respfmt.PrettyString(m.value))
+		body := m.renderValueBody()
 		if m.valueScroll > 0 {
-			lines := strings.Split(pretty, "\n")
+			lines := strings.Split(body, "\n")
 			if m.valueScroll >= len(lines) {
 				lines = nil
 			} else {
 				lines = lines[m.valueScroll:]
 			}
-			pretty = strings.Join(lines, "\n")
+			body = strings.Join(lines, "\n")
 		}
-		b.WriteString(pretty)
+		b.WriteString(body)
 	}
 
 	return m.pane(b.String(), w, h, m.focus == FocusRight)
+}
+
+// renderValueBody renders the focused value according to its type. Hashes
+// get a "field: value" layout (RESP2 HGETALL is a flat array, so pairs are
+// read two at a time); lists and strings fall through to the shared
+// redis-cli-style pretty-printer (a list is a numbered array, a string is
+// a quoted scalar).
+func (m Model) renderValueBody() string {
+	if m.focusedKind() == KindHash && m.value.Kind == resp.KindArray && !m.value.IsNull {
+		return m.renderHash(m.value)
+	}
+	return m.colorizePretty(respfmt.PrettyString(m.value))
+}
+
+// renderHash lays out a flat [f1,v1,f2,v2,…] array as aligned
+// "field: value" rows.
+func (m Model) renderHash(v resp.Value) string {
+	if len(v.Array) == 0 {
+		return m.st.muted.Render("(empty hash)")
+	}
+	var b strings.Builder
+	for i := 0; i+1 < len(v.Array); i += 2 {
+		field := respfmt.RawString(v.Array[i])
+		val := respfmt.PrettyString(v.Array[i+1])
+		b.WriteString(m.st.statusKey.Render(field))
+		b.WriteString(m.st.muted.Render(": "))
+		b.WriteString(val)
+		if i+2 < len(v.Array) {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 // renderStacked draws list-above-value for narrow terminals.
