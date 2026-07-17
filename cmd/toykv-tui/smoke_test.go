@@ -21,11 +21,18 @@ import (
 )
 
 func startServer(t *testing.T) (string, func()) {
+	return startServerWith(t, "")
+}
+
+// startServerWith boots a server, optionally password-protected, and
+// returns its bound address plus a stop func.
+func startServerWith(t *testing.T, requirePass string) (string, func()) {
 	t.Helper()
 	s, err := server.New(server.Config{
-		Addr:  "127.0.0.1:0",
-		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Store: store.New(),
+		Addr:        "127.0.0.1:0",
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:       store.New(),
+		RequirePass: requirePass,
 	})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
@@ -171,6 +178,138 @@ func TestTUI_TeatestSmoke_INCR(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("INCR never landed on the server within 2s")
+}
+
+// TestTUI_TeatestSmoke_TypedValueViews seeds a list and a hash, then walks
+// focus across both and asserts each renders in its own value-pane shape:
+// a list as elements, a hash as field: value pairs. This is the M14
+// "per-type view" smoke.
+func TestTUI_TeatestSmoke_TypedValueViews(t *testing.T) {
+	addr, stop := startServer(t)
+	defer stop()
+
+	seed, err := client.DialTimeout(addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// mylist (seq 1) sorts before myhash (seq 2), so focus lands on the
+	// list first and `j` moves to the hash.
+	if _, err := seed.Do("RPUSH", "mylist", "alpha", "beta"); err != nil {
+		t.Fatalf("seed RPUSH: %v", err)
+	}
+	if _, err := seed.Do("HSET", "myhash", "field1", "hval"); err != nil {
+		t.Fatalf("seed HSET: %v", err)
+	}
+	_ = seed.Close()
+
+	m := newTeaModel(t, addr)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(90, 20))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	// List view: focused on mylist, value pane shows the elements.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return containsAll(out, "mylist", "alpha", "beta")
+	}, teatest.WithDuration(10*time.Second))
+
+	// Move to the hash; value pane switches to field: value rows.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return containsAll(out, "myhash", "field1", "hval", ": ")
+	}, teatest.WithDuration(10*time.Second))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+// TestTUI_TeatestSmoke_Paging seeds more keys than one SCAN page holds and
+// drives [ / ] across pages, asserting the page indicator advances and the
+// visible key set actually changes (page 1 shows k000; page 2 does not).
+// This is the M14 "paging scenario" owned risk test.
+func TestTUI_TeatestSmoke_Paging(t *testing.T) {
+	addr, stop := startServer(t)
+	defer stop()
+
+	seed, err := client.DialTimeout(addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// 120 keys > defaultPageCount (50) ⇒ at least three SCAN pages. Seq
+	// order is insertion order, so page 1 = k000..k049, page 2 = k050..
+	for i := range 120 {
+		if _, err := seed.Do("SET", keyName(i), "v"); err != nil {
+			t.Fatalf("seed SET %d: %v", i, err)
+		}
+	}
+	_ = seed.Close()
+
+	m := newTeaModel(t, addr)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(90, 24))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	// Page 1: k000 visible, more pages follow.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return containsAll(out, "k000", "page 1 →")
+	}, teatest.WithDuration(10*time.Second))
+
+	// Next page: k050 only exists in page 2's SCAN range (page 1 returns
+	// k000..k049), so its appearance is positive proof paging advanced.
+	// The output stream is cumulative across frames, so assert positively
+	// rather than on the absence of page-1 keys.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return containsAll(out, "k050", "page 2")
+	}, teatest.WithDuration(10*time.Second))
+
+	// Back to page 1 works without crashing on the popped cursor.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+// TestTUI_TeatestSmoke_AuthPrompt points the TUI at a password-protected
+// server: the first refresh trips -NOAUTH, the masked prompt appears, and
+// submitting the password authenticates so the seeded key loads.
+func TestTUI_TeatestSmoke_AuthPrompt(t *testing.T) {
+	const pass = "hunter2"
+	addr, stop := startServerWith(t, pass)
+	defer stop()
+
+	// Seed a key over an authenticated connection.
+	seed, err := client.DialTimeout(addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if _, err := seed.Do("AUTH", pass); err != nil {
+		t.Fatalf("seed AUTH: %v", err)
+	}
+	if _, err := seed.Do("SET", "secretkey", "v"); err != nil {
+		t.Fatalf("seed SET: %v", err)
+	}
+	_ = seed.Close()
+
+	m := newTeaModel(t, addr)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(90, 20))
+
+	// First refresh trips -NOAUTH ⇒ the password prompt appears.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("password:"))
+	}, teatest.WithDuration(10*time.Second))
+
+	// Submit the password; the key list loads once authenticated.
+	tm.Type(pass)
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("secretkey"))
+	}, teatest.WithDuration(10*time.Second))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+// keyName renders a zero-padded key name so lexical and seq order agree.
+func keyName(i int) string {
+	return "k" + string(rune('0'+i/100%10)) + string(rune('0'+i/10%10)) + string(rune('0'+i%10))
 }
 
 // TestRun_BadAddrExit2 verifies the binary's run() returns the fatal
