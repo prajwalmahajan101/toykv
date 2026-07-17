@@ -23,6 +23,7 @@ type binding struct {
 var bindings = []binding{
 	{Key: "j/k", Desc: "down/up", Group: "Navigate"},
 	{Key: "g/G", Desc: "top/bottom", Group: "Navigate"},
+	{Key: "[/]", Desc: "prev/next page", Group: "Navigate"},
 	{Key: "r", Desc: "refresh", Group: "Navigate"},
 	{Key: "Tab", Desc: "switch pane", Group: "Navigate"},
 
@@ -34,7 +35,7 @@ var bindings = []binding{
 	{Key: "D", Desc: "decr", Group: "Mutate"},
 	{Key: "F", Desc: "flushdb", Group: "Mutate"},
 
-	{Key: "/", Desc: "filter", Group: "View", Footer: true, Rank: 5},
+	{Key: "/", Desc: "match", Group: "View", Footer: true, Rank: 5},
 	{Key: ":", Desc: "raw cmd", Group: "View", Footer: true, Rank: 6},
 
 	{Key: "?", Desc: "help", Group: "Meta", Footer: true, Rank: 8},
