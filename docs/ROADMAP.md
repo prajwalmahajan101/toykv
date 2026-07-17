@@ -192,7 +192,7 @@ Four ordering decisions deserve calling out:
 - **Exit:** `INFO` fields match live server state; a `SCAN` loop enumerates the full keyspace; integration tests introspect server state via `INFO`.
 
 ### M14 — TUI v2
-**Branch:** `feat/tui-v2` · **Depends on:** M11 (`TYPE` views), M12 (AUTH prompt), M13 (`SCAN` paging + `INFO` status bar) · **ADR:** none new — consumes M11–M13 surfaces
+**Branch:** `feat/tui-v2` · **Depends on:** M11 (`TYPE` views), M12 (AUTH prompt), M13 (`SCAN` paging + `INFO` status bar) · **ADR:** [0015](./adr/0015-tui-v2-scan-paging-and-tls-deferral.md) — TUI v2 SCAN-paging boundary + TLS-client deferral (the "none new" projection was revised: M14 mostly consumes M11–M13, but the paging carries no consistency contract of its own and TLS-client dialing is a deliberate deferral — both real boundaries, same call as M13's ADR-0014)
 - Multi-type rendering in the value pane: distinct string / list / hash views driven by `TYPE`.
 - `SCAN`-backed paging in the keys pane — removes the v1 large-keyspace caveat.
 - AUTH prompt on connect when the server has `requirepass`; INFO-driven status bar (fsync policy, dbsize, uptime).
@@ -225,7 +225,7 @@ Four ordering decisions deserve calling out:
 - Re-run `make bench` with typed workloads; README records the new numbers.
 - README + [SECURITY](./SECURITY.md) update — auth/TLS + protected mode lift the localhost-only ceiling; document the new "deployable, safe-by-default, **observable**" posture, the protected-mode override, and the OpenTelemetry/LGTM setup.
 - PRD / HLD / LLD deltas for types, RESP3, auth, protected mode, and observability.
-- ADR reconciliation: the **seven** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, SCAN cursor + INFO wire format, protected-mode default + atomic keyspace ops, OpenTelemetry signal model + OTLP export) are each written **after** their owning milestone merges (M10/M11/M12/M13/M15/M16) per [`docs/adr/README.md`](./adr/README.md); M17 only verifies all seven have landed and the index is current — it does not batch-write them at release time. (M13's ADR-0014 was added mid-cycle: the seq-cursor turned out to be a real architectural call, not the "no new ADR" the draft projected.)
+- ADR reconciliation: the **eight** v2 ADRs (RESP3 negotiation, tagged-union store model, AOF v3 format, AUTH/TLS, SCAN cursor + INFO wire format, TUI v2 SCAN-paging boundary + TLS-client deferral, protected-mode default + atomic keyspace ops, OpenTelemetry signal model + OTLP export) are each written **after** their owning milestone merges (M10/M11/M12/M13/M14/M15/M16) per [`docs/adr/README.md`](./adr/README.md); M17 only verifies all eight have landed and the index is current — it does not batch-write them at release time. (Two were added mid-cycle against a "no new ADR" projection: M13's ADR-0014 — the seq-cursor is a real store-model contract — and M14's ADR-0015 — the paging carries no consistency contract of its own and TLS-client dialing is a deliberate deferral.)
 - **Release-hardening gate (must all pass before the tag):**
   - Fix or deliberately quarantine the flaky `TestAOF_CrashInjection_DuringRewrite/late-kill` — no known-flaky crash-durability test at release.
   - Fix `.golangci.yml` (add the `version:` schema key) so `make lint` runs in CI again — a release must not ship with a non-functional lint gate.
@@ -306,7 +306,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M11 | Value types: lists + hashes (AOF v3) | ✅ | [#28](https://github.com/prajwalmahajan101/toykv/pull/28) | `m11` |
 | M12 | AUTH + TLS | ✅ | [#30](https://github.com/prajwalmahajan101/toykv/pull/30) | `m12` |
 | M13 | INFO + SCAN | ✅ | [#31](https://github.com/prajwalmahajan101/toykv/pull/31) | `m13` |
-| M14 | TUI v2 | ⏳ Planned (committed) | — | `m14` |
+| M14 | TUI v2 | ✅ | _`feat/tui-v2` (PR pending)_ | `m14` |
 | M15 | Hardening: protected mode + atomic keyspace ops | ⏳ Planned (committed) | — | `m15` |
 | M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ⏳ Planned (committed) | — | `m16` |
 | M17 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
