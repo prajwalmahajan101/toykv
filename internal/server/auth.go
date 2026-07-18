@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
@@ -28,9 +29,11 @@ func authenticate(s *Server, cs *connState, user, pass []byte) resp.Value {
 	userOK := string(user) == "default"
 	passOK := subtle.ConstantTimeCompare(pass, []byte(s.cfg.RequirePass)) == 1
 	if !userOK || !passOK {
+		s.tel.Metrics.AuthAttempts.Add(context.Background(), 1, resultAttr("wrongpass"))
 		return resp.Error(errWrongPass)
 	}
 	cs.authenticated = true
+	s.tel.Metrics.AuthAttempts.Add(context.Background(), 1, resultAttr("success"))
 	return resp.String("OK")
 }
 

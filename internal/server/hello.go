@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
@@ -42,6 +43,13 @@ func cmdHello(s *Server, cs *connState, argv [][]byte) resp.Value {
 		}
 	}
 
+	// Keep the by-protocol gauge (§1.2) balanced across an upgrade: move one
+	// client from the old protocol bucket to the new one. No-op if unchanged.
+	if proto != cs.proto {
+		m := s.tel.Metrics
+		m.ClientsByProtocol.Add(context.Background(), -1, protoAttr(cs.proto))
+		m.ClientsByProtocol.Add(context.Background(), 1, protoAttr(proto))
+	}
 	cs.proto = proto
 	return helloReply(cs)
 }
