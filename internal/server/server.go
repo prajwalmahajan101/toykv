@@ -114,6 +114,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Telemetry == nil {
 		cfg.Telemetry = telemetry.Disabled()
 	}
+	// Hand the store the live telemetry handle so its keyspace/expiry
+	// metrics (§1.3) and, later, spans (§3) are recorded. Safe before serving.
+	cfg.Store.SetMetrics(cfg.Telemetry.Metrics)
 	s := &Server{
 		cfg:       cfg,
 		log:       cfg.Log,
@@ -133,11 +136,12 @@ func New(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("server: aof replay: %w", err)
 		}
 		s.replayStats = stats
-		w, err := aof.Open(cfg.Dir, cfg.FsyncPolicy)
+		w, err := aof.Open(cfg.Dir, cfg.FsyncPolicy, aof.WithMetrics(cfg.Telemetry.Metrics))
 		if err != nil {
 			return nil, fmt.Errorf("server: aof open: %w", err)
 		}
 		s.aof = w
+		s.recordReplayStats(stats)
 		s.log.Info("aof ready",
 			"dir", cfg.Dir,
 			"fsync", cfg.FsyncPolicy.String(),
@@ -145,6 +149,9 @@ func New(cfg Config) (*Server, error) {
 			"replay_bytes", stats.Bytes,
 			"replay_duration", stats.Duration,
 		)
+	}
+	if err := s.registerObservableGauges(); err != nil {
+		s.log.Warn("telemetry: observable gauge registration failed", "err", err)
 	}
 	return s, nil
 }

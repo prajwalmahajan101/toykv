@@ -3,6 +3,7 @@ package aof
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/prajwalmahajan101/toykv/internal/resp"
+	"github.com/prajwalmahajan101/toykv/internal/telemetry"
 )
 
 // FsyncPolicy controls how often the AOF is flushed to disk.
@@ -75,6 +80,12 @@ type Writer struct {
 	mu    sync.Mutex
 	dirty bool // buffered/unfsynced bytes are present
 
+	// metrics records §1.5 AOF telemetry; never nil (defaulted to a no-op in
+	// Open, replaced via WithMetrics). policyAttr is the fixed {policy} label
+	// for this writer, precomputed so the fsync path allocates no attributes.
+	metrics    *telemetry.Metrics
+	policyAttr metric.MeasurementOption
+
 	// sideBuf, when non-nil, mirrors every Append's RESP bytes for the
 	// in-flight rewriter to consume after the atomic rename. Dual-write
 	// is intentional: the canonical file remains durable and consistent
@@ -85,10 +96,24 @@ type Writer struct {
 	doneCh chan struct{} // closed when the goroutine has exited
 }
 
+// Option configures a Writer at Open time. The default (no options) is a
+// no-op telemetry handle, so existing callers and tests are unaffected.
+type Option func(*Writer)
+
+// WithMetrics installs the live telemetry handle so §1.5 AOF metrics are
+// recorded. Without it the writer records into a no-op handle.
+func WithMetrics(m *telemetry.Metrics) Option {
+	return func(w *Writer) {
+		if m != nil {
+			w.metrics = m
+		}
+	}
+}
+
 // Open opens (or creates) the AOF in dir under the given fsync policy.
 // The directory is created if it does not exist; the file is created
 // with the header if it is fresh, and validated if it already exists.
-func Open(dir string, policy FsyncPolicy) (*Writer, error) {
+func Open(dir string, policy FsyncPolicy, opts ...Option) (*Writer, error) {
 	if dir == "" {
 		return nil, errors.New("aof: dir must be set")
 	}
@@ -154,14 +179,19 @@ func Open(dir string, policy FsyncPolicy) (*Writer, error) {
 
 	bw := bufio.NewWriter(f)
 	w := &Writer{
-		path:   path,
-		dir:    dir,
-		f:      f,
-		bw:     bw,
-		rw:     resp.NewWriter(bw),
-		policy: policy,
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		path:       path,
+		dir:        dir,
+		f:          f,
+		bw:         bw,
+		rw:         resp.NewWriter(bw),
+		policy:     policy,
+		metrics:    telemetry.NoopMetrics(),
+		policyAttr: metric.WithAttributes(attribute.String("policy", policy.String())),
+		stopCh:     make(chan struct{}),
+		doneCh:     make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(w)
 	}
 
 	if policy == FsyncEverysec {
@@ -191,12 +221,20 @@ func (w *Writer) Size() (int64, error) {
 // Append RESP-encodes argv as a command array, writes it, flushes the
 // buffer, and fsyncs per the configured policy. The reply path must
 // call Append before sending +OK so the durability contract holds.
-func (w *Writer) Append(argv [][]byte) error {
+func (w *Writer) Append(argv [][]byte) (err error) {
 	if len(argv) == 0 {
 		return errors.New("aof: empty argv")
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// §1.5: any failure below is a durability breach — count it. On success
+	// (bottom of the function) we count the append and its byte size.
+	defer func() {
+		if err != nil {
+			w.metrics.AOFAppendErrors.Add(context.Background(), 1)
+		}
+	}()
 
 	elems := make([]resp.Value, len(argv))
 	for i, a := range argv {
@@ -230,14 +268,47 @@ func (w *Writer) Append(argv [][]byte) error {
 
 	switch w.policy {
 	case FsyncAlways:
+		start := time.Now()
 		if err := w.f.Sync(); err != nil {
 			return fmt.Errorf("aof: fsync: %w", err)
 		}
+		ctx := context.Background()
+		w.metrics.AOFFsyncs.Add(ctx, 1, w.policyAttr)
+		w.metrics.AOFFsyncDuration.Record(ctx, time.Since(start).Seconds(), w.policyAttr)
 		w.dirty = false
 	case FsyncEverysec, FsyncNever:
 		// ticker / kernel handle fsync
 	}
+
+	ctx := context.Background()
+	w.metrics.AOFAppends.Add(ctx, 1)
+	w.metrics.AOFAppendBytes.Add(ctx, int64(respRecordLen(argv)))
 	return nil
+}
+
+// respRecordLen returns the exact byte length of the RESP array encoding of
+// argv (as written to the AOF) without encoding it, so the append.bytes
+// counter costs no allocation on the write path.
+//
+//	*<n>\r\n  then per element  $<len>\r\n<bytes>\r\n
+func respRecordLen(argv [][]byte) int {
+	n := 1 + decDigits(len(argv)) + 2
+	for _, a := range argv {
+		n += 1 + decDigits(len(a)) + 2 + len(a) + 2
+	}
+	return n
+}
+
+func decDigits(n int) int {
+	if n == 0 {
+		return 1
+	}
+	d := 0
+	for n > 0 {
+		d++
+		n /= 10
+	}
+	return d
 }
 
 // Close stops the everysec ticker (if running), flushes the buffer,
@@ -397,7 +468,11 @@ func (w *Writer) runEverysec() {
 		case <-ticker.C:
 			w.mu.Lock()
 			if w.dirty {
+				start := time.Now()
 				_ = w.f.Sync()
+				ctx := context.Background()
+				w.metrics.AOFFsyncs.Add(ctx, 1, w.policyAttr)
+				w.metrics.AOFFsyncDuration.Record(ctx, time.Since(start).Seconds(), w.policyAttr)
 				w.dirty = false
 			}
 			w.mu.Unlock()

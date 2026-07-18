@@ -1,5 +1,7 @@
 package store
 
+import "context"
+
 // Typed accessors for list and hash values (M11). All follow the same
 // shape: write ops take the Lock, evict an expired entry inline, check
 // the type tag, and mutate; read ops take the RLock and treat expired
@@ -19,6 +21,7 @@ func (s *Store) getForWrite(k string) (entry, bool) {
 	}
 	if e.expired(s.nowFunc()) {
 		delete(s.data, k)
+		s.metrics.KeysExpired.Add(context.Background(), 1, lazyExpiryAttr)
 		return entry{}, false
 	}
 	return e, true

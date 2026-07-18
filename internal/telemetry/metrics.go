@@ -4,7 +4,17 @@ import (
 	"errors"
 
 	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 )
+
+// NoopMetrics returns a fully no-op Metrics handle for packages (store, aof)
+// that want a non-nil handle by default and receive the live one via a
+// setter/option only when the server wires telemetry. Recording into it is
+// a no-op with no allocation of exported measurements.
+func NoopMetrics() *Metrics {
+	mx, _ := newMetrics(metricnoop.NewMeterProvider().Meter(scopeName))
+	return mx
+}
 
 // Metrics holds every pre-created instrument handle toykv records into. It
 // is built once from the meter (real or no-op) so the hot path never
@@ -28,6 +38,32 @@ type Metrics struct {
 	AuthAttempts        metric.Int64Counter       // toykv.auth.attempts{result}
 	TLSHandshakes       metric.Int64Counter       // toykv.tls.handshakes{result}
 	ClientsByProtocol   metric.Int64UpDownCounter // toykv.clients.by_protocol{proto}
+
+	// Keyspace & store — §1.3.
+	KeyspaceHits   metric.Int64Counter // toykv.keyspace.hits
+	KeyspaceMisses metric.Int64Counter // toykv.keyspace.misses
+	KeysExpired    metric.Int64Counter // toykv.keys.expired{path}
+
+	// TTL sweeper — §1.4.
+	SweeperPasses   metric.Int64Counter     // toykv.sweeper.passes
+	SweeperSampled  metric.Int64Counter     // toykv.sweeper.sampled
+	SweeperEvicted  metric.Int64Counter     // toykv.sweeper.evicted
+	SweeperDuration metric.Float64Histogram // toykv.sweeper.duration (s)
+
+	// AOF / persistence — §1.5 (the observable gauges aof.size and
+	// aof.rewrite.in_progress are registered server-side, not here).
+	AOFAppends         metric.Int64Counter     // toykv.aof.appends
+	AOFAppendBytes     metric.Int64Counter     // toykv.aof.append.bytes
+	AOFFsyncs          metric.Int64Counter     // toykv.aof.fsyncs{policy}
+	AOFFsyncDuration   metric.Float64Histogram // toykv.aof.fsync.duration (s){policy}
+	AOFAppendErrors    metric.Int64Counter     // toykv.aof.append.errors
+	AOFRewrites        metric.Int64Counter     // toykv.aof.rewrites{result}
+	AOFRewriteDuration metric.Float64Histogram // toykv.aof.rewrite.duration (s)
+
+	// AOF replay — §1.6 (recorded once at startup).
+	AOFReplayRecords  metric.Int64Counter     // toykv.aof.replay.records
+	AOFReplayBytes    metric.Int64Counter     // toykv.aof.replay.bytes
+	AOFReplayDuration metric.Float64Histogram // toykv.aof.replay.duration (s)
 }
 
 // newMetrics creates all instrument handles from m. On a no-op meter this
@@ -61,6 +97,44 @@ func newMetrics(m metric.Meter) (*Metrics, error) {
 			"TLS handshakes, by result."),
 		ClientsByProtocol: b.updown("toykv.clients.by_protocol",
 			"Connected clients by negotiated wire protocol."),
+
+		KeyspaceHits: b.counter("toykv.keyspace.hits",
+			"Read commands that found a live key."),
+		KeyspaceMisses: b.counter("toykv.keyspace.misses",
+			"Read commands that found no live key (absent or expired)."),
+		KeysExpired: b.counter("toykv.keys.expired",
+			"Keys evicted due to expiry, by path (lazy|sweeper)."),
+
+		SweeperPasses: b.counter("toykv.sweeper.passes",
+			"TTL sweeper tick passes."),
+		SweeperSampled: b.counter("toykv.sweeper.sampled",
+			"Keys sampled by the TTL sweeper."),
+		SweeperEvicted: b.counter("toykv.sweeper.evicted",
+			"Keys evicted by the TTL sweeper."),
+		SweeperDuration: b.histogram("toykv.sweeper.duration", "s",
+			"TTL sweeper tick wall time."),
+
+		AOFAppends: b.counter("toykv.aof.appends",
+			"AOF records appended."),
+		AOFAppendBytes: b.counter("toykv.aof.append.bytes",
+			"Bytes appended to the AOF."),
+		AOFFsyncs: b.counter("toykv.aof.fsyncs",
+			"AOF fsyncs, by policy."),
+		AOFFsyncDuration: b.histogram("toykv.aof.fsync.duration", "s",
+			"AOF fsync latency, by policy — the durability-latency signal."),
+		AOFAppendErrors: b.counter("toykv.aof.append.errors",
+			"AOF append failures — a durability breach."),
+		AOFRewrites: b.counter("toykv.aof.rewrites",
+			"BGREWRITEAOF completions, by result."),
+		AOFRewriteDuration: b.histogram("toykv.aof.rewrite.duration", "s",
+			"BGREWRITEAOF wall time (start→finalize)."),
+
+		AOFReplayRecords: b.counter("toykv.aof.replay.records",
+			"Records applied during startup AOF replay."),
+		AOFReplayBytes: b.counter("toykv.aof.replay.bytes",
+			"Bytes read during startup AOF replay."),
+		AOFReplayDuration: b.histogram("toykv.aof.replay.duration", "s",
+			"Startup AOF replay wall time."),
 	}
 	return mx, b.err()
 }
