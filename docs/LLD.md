@@ -491,6 +491,45 @@ if s.cfg.TLS != nil { l = tls.NewListener(l, s.cfg.TLS) }
 carries the `*tls.Config` rather than file paths so tests inject
 in-memory self-signed certs.
 
+### 5.6 Protected mode + atomic keyspace ops (M15)
+
+**Protected mode** is the safe-by-default startup refusal that earns the
+`2.0.0` major. `checkProtectedMode` runs inside `server.New` — before AOF
+replay and before the listener opens — so an unsafe bind never touches disk:
+
+```go
+if err := checkProtectedMode(cfg.Addr, cfg.RequirePass, cfg.TLS != nil, cfg.ProtectedMode); err != nil {
+    return nil, err // main logs + exits non-zero
+}
+```
+
+The refusal fires only when protected mode is enabled **and** the bind is
+non-loopback **and** neither `requirepass` nor TLS is set. `bindIsLoopback`
+is fail-safe: an empty/unspecified host (`:6390`, `0.0.0.0`, `::`) is
+non-loopback (the all-interfaces case), `localhost` and any loopback IP are
+loopback, and a hostname is loopback only when *every* resolved address is
+(an unresolvable host is treated as non-loopback). The `-protected-mode`
+flag (`yes|no`) is validated in `main` (bad value → exit 2); the unsafe-bind
+refusal is a distinct error class from `New` (→ exit 1). Config defaults the
+empty value to enabled so an embedder is protected by default. This
+deliberately deviates from Redis, which accepts the connection and refuses
+non-loopback *commands* — toykv surfaces the unsafe posture at boot (ADR-0016).
+
+**Atomic `RENAME` / `RENAMENX` / `COPY`** are single store-mutex-guarded
+moves in `internal/store/keyspace.go`, replacing the racy client-side
+`GET`+`SET`+`DEL`. Value payload, TTL (`expireAt`), and value type travel
+with the key inside the moved `entry`; the destination gets a **fresh
+creation seq** (`nextSeq`) because it is a newly-appearing key for SCAN — a
+moved key never hides behind a cursor that already passed a stale low seq
+(consistent with §SCAN's guarantee, ADR-0014). `RENAME` moves the pointer
+(source is deleted); `COPY` deep-copies the deque/map so later source
+mutation cannot leak into the copy. The handlers record the verbatim command
+via `appendIfLive` on a real mutation only (no-op self-rename and `:0`
+RENAMENX/COPY skip the append) — **no AOF format bump**: these ride the v3
+record shape and replay deterministically. `COPY` accepts `DB 0` (single-DB;
+every real client, incl. go-redis, sends it) and rejects other indices as
+out of range (ADR-0016).
+
 ## 6. CLI (`internal/cli` + `cmd/toykv-cli`)
 
 ### 6.1 Mode dispatch

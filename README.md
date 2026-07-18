@@ -79,6 +79,8 @@ redis-cli -p 6390 --tls --cacert cert.pem PING
 
 `-tls-cert`/`-tls-key` must be given as a pair (min TLS 1.2). Both flags compose with `-requirepass` — see [SECURITY](./docs/SECURITY.md) for the deployment posture and [ADR-0013](./docs/adr/0013-auth-model-and-tls-termination.md) for the auth model.
 
+Since M15, **protected mode** is on by default: the server refuses to *start* on a non-loopback bind (e.g. `-addr 0.0.0.0:6390`) unless `-requirepass` or TLS is set, exiting non-zero with a message naming the fix. Bind a loopback address, add auth/TLS, or pass `-protected-mode no` to override. This is the deliberate breaking change that earns `2.0.0` — see [ADR-0016](./docs/adr/0016-protected-mode-and-atomic-keyspace-ops.md).
+
 The TUI:
 
 ```sh
@@ -119,6 +121,9 @@ If your fresh clone doesn't carry the GIF yet, here's the static rendering:
 | `SET key value [EX s] [PX ms] [NX\|XX]` | 2–6 | `+OK` / `$-1` / `_` | Nil under `NX`/`XX` rejection (`_` on RESP3) |
 | `DEL key [key …]` | ≥1 | `:N` | Number of keys removed |
 | `EXISTS key [key …]` | ≥1 | `:N` | Counts duplicates |
+| `RENAME key newkey` | 2 | `+OK` / `-ERR` | Atomic move; overwrites dest; TTL + type travel. `-ERR no such key` if absent. See [ADR-0016](./docs/adr/0016-protected-mode-and-atomic-keyspace-ops.md) |
+| `RENAMENX key newkey` | 2 | `:0` / `:1` | Like `RENAME` but `:0` (no move) if dest exists |
+| `COPY src dst [DB 0] [REPLACE]` | 2–5 | `:0` / `:1` | Deep copy; TTL + type travel. `:0` if dest exists without `REPLACE`. Single-DB: only `DB 0` |
 | `EXPIRE key seconds` | 2 | `:0` / `:1` | 0 if key missing |
 | `PEXPIRE key ms` | 2 | `:0` / `:1` | |
 | `PEXPIREAT key ms-epoch` | 2 | `:0` / `:1` | |

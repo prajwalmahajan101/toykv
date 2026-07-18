@@ -12,6 +12,15 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ### Added
 
+- Atomic keyspace commands (M15, tag `m15`): `RENAME`, `RENAMENX`, and
+  `COPY source dest [DB 0] [REPLACE]` — single store-mutex-guarded moves
+  that replace the racy client-side `GET`+`SET`+`DEL`. TTL and value type
+  (string/list/hash) travel with the key; the destination gets a fresh
+  SCAN sequence. `RENAME`/`RENAMENX` return `-ERR no such key` on a
+  missing source; `COPY` deep-copies list/hash payloads and accepts only
+  DB index 0 (single-DB). Recorded verbatim in the AOF — **no format
+  bump**, replayed deterministically under the v3 reader. See
+  [ADR-0016](./docs/adr/0016-protected-mode-and-atomic-keyspace-ops.md).
 - Authentication (M12, tag `m12`): `-requirepass <pass>` server flag and
   the `AUTH [username] password` command (single-user model; the only
   valid username is `default`, matching Redis). `HELLO 3 AUTH default
@@ -56,6 +65,14 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ### Changed
 
+- **Protected mode (M15) — the deliberate breaking change that earns
+  `2.0.0`.** The server now refuses to *start* when bound to a non-loopback
+  address with neither `-requirepass` nor TLS configured, exiting non-zero
+  with a message naming the fix. This flips v1's implicit "bind anywhere,
+  serve anyone" contract. Override with `-protected-mode no` (logged);
+  loopback binds and auth'd/TLS binds are unaffected. A bad flag value
+  exits 2; the unsafe-bind refusal exits 1. See
+  [ADR-0016](./docs/adr/0016-protected-mode-and-atomic-keyspace-ops.md).
 - `GET` misses and failed `SET NX/XX` now reply with the RESP3 null (`_`)
   to a RESP3 client; RESP2 clients still receive `$-1`, byte-identical to
   v1.

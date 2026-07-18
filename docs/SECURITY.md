@@ -19,7 +19,7 @@
 ## Defaults
 
 - `toykv -addr :6390` binds to **all interfaces** *if you ask*; the canonical examples use `-addr 127.0.0.1:6390`.
-- Auth and TLS are **opt-in** (`-requirepass`, `-tls-cert`/`-tls-key`). A non-loopback bind without either still starts in M12 — the safe-by-default refusal (**protected mode**) lands in M15 and is the deliberate breaking change that earns the `2.0.0` tag.
+- Auth and TLS are **opt-in** (`-requirepass`, `-tls-cert`/`-tls-key`). Since M15, **protected mode** makes the default safe: the server refuses to *start* on a non-loopback bind that has neither auth nor TLS (exit non-zero, message names the fix). Override with `-protected-mode no`. This is the deliberate breaking change that earns the `2.0.0` tag — see [ADR-0016](./adr/0016-protected-mode-and-atomic-keyspace-ops.md).
 - `-tls-cert` and `-tls-key` must be given as a pair; the server exits non-zero otherwise (no silent plaintext fallback).
 - Unauthenticated `PING` is allowed by design (health checks, readiness probes) — a documented deviation from Redis; see [ADR-0013](./adr/0013-auth-model-and-tls-termination.md).
 - AOF file mode: `0600`. Directory: `0700`. Set by the server on creation.
@@ -28,7 +28,7 @@
 ## What you must not do
 
 - **Do not expose toykv to the public internet**, even with auth — there is no lockout, no rate limit on `AUTH` attempts, and no audit log.
-- **Do not run a non-loopback bind without `-requirepass` and TLS.** Until M15's protected mode, the server will not stop you.
+- **Do not run a non-loopback bind without `-requirepass` and TLS.** Since M15, protected mode refuses to start such a bind unless you explicitly pass `-protected-mode no` — do not disable it to work around the refusal.
 - **Do not store secrets in toykv.** There is no encryption at rest.
 - **Do not run multiple toykv instances on the same `-dir`.** AOF assumes single-writer.
 - **Do not pass `-requirepass` on shared machines carelessly** — the password is visible in the process list (`ps`). An env/config alternative is backlog.
@@ -62,8 +62,8 @@ Public disclosure: 90 days after report, or coordinated earlier.
 
 - ~~TLS via Go `crypto/tls`~~ — **shipped in M12**.
 - ~~AUTH command (RESP-compatible)~~ — **shipped in M12**.
-- Protected mode: refuse non-loopback bind without auth/TLS — **M15** (the earned `2.0.0` break).
-- `RENAME`/`RENAMENX`/`COPY` for atomic keyspace edits — **M15**.
+- ~~Protected mode: refuse non-loopback bind without auth/TLS~~ — **shipped in M15** (the earned `2.0.0` break; override `-protected-mode no`).
+- ~~`RENAME`/`RENAMENX`/`COPY` for atomic keyspace edits~~ — **shipped in M15** (single store-mutex ops, TTL + type preserved).
 - IP allowlist — backlog.
 - Per-client connection limit — backlog.
 - `AUTH` attempt rate-limiting / lockout — backlog.
