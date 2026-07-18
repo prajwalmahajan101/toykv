@@ -17,7 +17,7 @@ import (
 // cmdHSet implements HSET key field value [field value ...]. Returns
 // the number of NEW fields created. Odd trailing pairs are an arity
 // error (the dispatch table can only bound the minimum).
-func cmdHSet(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdHSet(s *Server, cs *connState, argv [][]byte) resp.Value {
 	if len(argv[2:])%2 != 0 {
 		return resp.Error("ERR wrong number of arguments for 'hset'")
 	}
@@ -25,7 +25,7 @@ func cmdHSet(s *Server, _ *connState, argv [][]byte) resp.Value {
 	if errors.Is(err, store.ErrWrongType) {
 		return wrongTypeErr()
 	}
-	if err := s.appendIfLive(argv); err != nil {
+	if err := s.appendIfLive(cs.context(), argv); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(int64(n))
@@ -47,7 +47,7 @@ func cmdHGet(s *Server, _ *connState, argv [][]byte) resp.Value {
 
 // cmdHDel implements HDEL key field [field ...]. Returns the count
 // actually removed; appends only when at least one field was removed.
-func cmdHDel(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdHDel(s *Server, cs *connState, argv [][]byte) resp.Value {
 	fields := make([]string, 0, len(argv)-2)
 	for _, f := range argv[2:] {
 		fields = append(fields, string(f))
@@ -57,7 +57,7 @@ func cmdHDel(s *Server, _ *connState, argv [][]byte) resp.Value {
 		return wrongTypeErr()
 	}
 	if n > 0 {
-		if err := s.appendIfLive(argv); err != nil {
+		if err := s.appendIfLive(cs.context(), argv); err != nil {
 			return resp.Error("ERR aof append failed")
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/prajwalmahajan101/toykv/internal/aof"
 	"github.com/prajwalmahajan101/toykv/internal/store"
 	"github.com/prajwalmahajan101/toykv/internal/telemetry"
 )
@@ -151,4 +152,56 @@ func TestStoreSpan(t *testing.T) {
 	if hash == "mykey" {
 		t.Error("key.hash leaked the plaintext key")
 	}
+}
+
+// TestAOFAppendSpan verifies a mutating command on an AOF-backed server emits
+// an aof.append span parented to the command span (a sibling of store.<op>),
+// with a positive bytes attribute.
+func TestAOFAppendSpan(t *testing.T) {
+	dir := t.TempDir()
+	tp, sr := telemetry.TestSpanProviders()
+	s, err := New(Config{
+		Addr:        "127.0.0.1:0",
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:       store.New(),
+		Dir:         dir,
+		FsyncPolicy: aof.FsyncAlways,
+		Telemetry:   tp,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	connCtx, connSpan := s.tel.Tracer.Start(t.Context(), "connection")
+	cs := newConnState(1, true)
+	cs.ctx = connCtx
+	s.observeCommand(cs, cmd("SET", "k", "v"))
+	connSpan.End()
+
+	spans := sr.Ended()
+	aofSp, ok := spanByName(spans, "aof.append")
+	if !ok {
+		t.Fatal("no aof.append span recorded")
+	}
+	cmdSp, ok := spanByName(spans, "command")
+	if !ok {
+		t.Fatal("no command span recorded")
+	}
+	if aofSp.Parent().SpanID() != cmdSp.SpanContext().SpanID() {
+		t.Errorf("aof.append parent = %v, want command span %v",
+			aofSp.Parent().SpanID(), cmdSp.SpanContext().SpanID())
+	}
+	if v, ok := spanIntAttr(aofSp, "bytes"); !ok || v <= 0 {
+		t.Errorf("aof.append bytes = %d (present=%v), want > 0", v, ok)
+	}
+}
+
+func spanIntAttr(sp sdktrace.ReadOnlySpan, key string) (int64, bool) {
+	for _, kv := range sp.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.AsInt64(), true
+		}
+	}
+	return 0, false
 }
