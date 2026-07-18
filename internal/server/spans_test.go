@@ -47,6 +47,15 @@ func spanAttr(sp sdktrace.ReadOnlySpan, key string) (string, bool) {
 	return "", false
 }
 
+func spanBoolAttr(sp sdktrace.ReadOnlySpan, key string) (bool, bool) {
+	for _, kv := range sp.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.AsBool(), true
+		}
+	}
+	return false, false
+}
+
 // TestCommandSpan verifies a dispatched command produces a "command" span
 // whose parent is the connection span, with the expected attributes, and
 // that an error reply sets the span's error status + error.kind.
@@ -103,5 +112,43 @@ func TestCommandSpan(t *testing.T) {
 	if errSpan.Parent().SpanID() != connSp.SpanContext().SpanID() {
 		t.Errorf("command span parent = %v, want connection span %v",
 			errSpan.Parent().SpanID(), connSp.SpanContext().SpanID())
+	}
+}
+
+// TestStoreSpan verifies a keyspace command emits a store.<op> span parented
+// to its command span, with a hit attribute and a hashed key (capture on in
+// TestSpanProviders) that is never the plaintext key.
+func TestStoreSpan(t *testing.T) {
+	s, sr := spanServer(t)
+	connCtx, connSpan := s.tel.Tracer.Start(t.Context(), "connection")
+	cs := newConnState(1, true)
+	cs.ctx = connCtx
+
+	s.observeCommand(cs, cmd("GET", "mykey")) // miss → store.get, hit=false
+	connSpan.End()
+
+	spans := sr.Ended()
+	storeSp, ok := spanByName(spans, "store.get")
+	if !ok {
+		t.Fatal("no store.get span recorded")
+	}
+	cmdSp, ok := spanByName(spans, "command")
+	if !ok {
+		t.Fatal("no command span recorded")
+	}
+	if storeSp.Parent().SpanID() != cmdSp.SpanContext().SpanID() {
+		t.Errorf("store.get parent = %v, want command span %v",
+			storeSp.Parent().SpanID(), cmdSp.SpanContext().SpanID())
+	}
+	hit, hitSet := spanBoolAttr(storeSp, "hit")
+	if !hitSet || hit {
+		t.Errorf("store.get hit = %v (present=%v), want false", hit, hitSet)
+	}
+	hash, ok := spanAttr(storeSp, "key.hash")
+	if !ok {
+		t.Fatal("store.get missing key.hash (capture is on)")
+	}
+	if hash == "mykey" {
+		t.Error("key.hash leaked the plaintext key")
 	}
 }
