@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
@@ -46,10 +47,23 @@ func protoAttr(p resp.Proto) metric.MeasurementOption {
 func (s *Server) observeCommand(cs *connState, argv [][]byte) resp.Value {
 	m := s.tel.Metrics
 	name := commandLabel(argv)
-	ctx := cs.context() // per-connection context (span-carrying once tracing lands)
+
+	// Command span, child of the connection span on cs.ctx. Swap the command
+	// context onto cs for the dispatch so any store/aof spans nest under this
+	// command rather than directly under the connection; restore on return.
+	cmdCtx, span := s.tel.Tracer.Start(cs.context(), "command")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("db.system", "toykv"),
+		attribute.String("db.operation", name),
+		attribute.Int("argc", len(argv)),
+	)
+	prevCtx := cs.ctx
+	cs.ctx = cmdCtx
+	defer func() { cs.ctx = prevCtx }()
 
 	cmdAttr := attribute.String("command", name)
-	m.CommandsInflight.Add(ctx, 1, metric.WithAttributes(cmdAttr))
+	m.CommandsInflight.Add(cmdCtx, 1, metric.WithAttributes(cmdAttr))
 
 	// Real wall-clock latency (monotonic via time.Since); independent of the
 	// injectable TTL clock, which must not distort measured duration.
@@ -57,20 +71,71 @@ func (s *Server) observeCommand(cs *connState, argv [][]byte) resp.Value {
 	reply := s.dispatch(cs, argv)
 	elapsed := time.Since(start)
 
-	m.CommandsInflight.Add(ctx, -1, metric.WithAttributes(cmdAttr))
-	m.CommandDuration.Record(ctx, elapsed.Seconds(), metric.WithAttributes(cmdAttr))
+	m.CommandsInflight.Add(cmdCtx, -1, metric.WithAttributes(cmdAttr))
+	m.CommandDuration.Record(cmdCtx, elapsed.Seconds(), metric.WithAttributes(cmdAttr))
 
 	status := "ok"
 	if reply.Kind == resp.KindError {
 		status = "error"
-		m.CommandErrors.Add(ctx, 1, metric.WithAttributes(
-			cmdAttr, attribute.String("kind", errorKind(reply.Str)),
+		kind := errorKind(reply.Str)
+		m.CommandErrors.Add(cmdCtx, 1, metric.WithAttributes(
+			cmdAttr, attribute.String("kind", kind),
 		))
+		span.SetAttributes(attribute.String("error.kind", kind))
+		span.SetStatus(codes.Error, reply.Str)
 	}
-	m.Commands.Add(ctx, 1, metric.WithAttributes(
+	m.Commands.Add(cmdCtx, 1, metric.WithAttributes(
 		cmdAttr, attribute.String("status", status),
 	))
+	// Post-dispatch attrs capture the connection's state after commands that
+	// mutate it (HELLO → proto, AUTH → authenticated).
+	span.SetAttributes(
+		attribute.Int("resp.proto", int(cs.proto)),
+		attribute.Bool("authenticated", cs.authenticated),
+		attribute.String("reply.kind", replyKindName(reply.Kind)),
+	)
 	return reply
+}
+
+// replyKindName maps a RESP frame kind to a bounded, human-readable label
+// for the command span's reply.kind attribute.
+func replyKindName(k resp.Kind) string {
+	switch k {
+	case resp.KindSimpleString:
+		return "simple"
+	case resp.KindError:
+		return "error"
+	case resp.KindInteger:
+		return "integer"
+	case resp.KindBulkString:
+		return "bulk"
+	case resp.KindArray:
+		return "array"
+	case resp.KindMap:
+		return "map"
+	case resp.KindSet:
+		return "set"
+	case resp.KindNull:
+		return "null"
+	case resp.KindDouble:
+		return "double"
+	case resp.KindBoolean:
+		return "boolean"
+	case resp.KindVerbatim:
+		return "verbatim"
+	case resp.KindPush:
+		return "push"
+	default:
+		return "other"
+	}
+}
+
+// protoName is the bounded label for a wire protocol version.
+func protoName(p resp.Proto) string {
+	if p == resp.Proto3 {
+		return "resp3"
+	}
+	return "resp2"
 }
 
 // commandLabel returns the bounded metric label for a command: the
