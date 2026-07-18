@@ -115,9 +115,25 @@ append+fsync as one span (fsync latency is also the `aof.fsync.duration`
 metric), and the rewrite sub-spans would need context threaded into the
 rewriter. `aof.rewrite`/`aof.replay` are roots, not command-linked. `store.<op>`
 spans are leaf spans whose duration spans the whole handler (arg-parse included),
-a minor imprecision. The OTel SDK adds a real dependency tree (~20 modules). Even
-no-op, each command builds a small bounded attribute set (~29 allocs/op measured
-on the disabled path) — accepted, and guarded by the parity benchmark.
+a minor imprecision. The OTel SDK adds a real dependency tree (~20 modules).
+
+**Amended at M17 (2026-07-18) — the parity benchmark caught a real regression.**
+The release-gate A/B against the pre-M16 binary measured **~18–21% lower SET/GET
+throughput** with telemetry compiled-in-but-disabled. The original assumption —
+that the SDK no-ops make instrumentation "cost nothing" — was wrong: building an
+`attribute.Set` or a `metric` option **allocates whether or not the providers
+record**, so rebuilding them per command (four `WithAttributes` + a 3-attr span
+`SetAttributes`) taxed the disabled path (~29 allocs/op). Resolution **kept the
+no-guard design** (no `if enabled` added): per-command instrument attributes are
+now **memoized once at construction** in a `cmdInstr` cache keyed by the bounded
+command label — `attribute.Set`-backed `MeasurementOption`s and a spread-at-`Start`
+`[]SpanStartOption`. Disabled path dropped to **14 allocs/op (1757 ns/op)**; SET
+returned to parity and GET to within ~7% (the residual floor is the two
+irreducible no-op `Tracer.Start` context allocations, unavoidable without a
+guard). `TestObserveCommand_Disabled_AllocBudget` (≤16 allocs) now guards it. The
+lesson: "no-op providers make it free" is false for attribute/option construction —
+memoize the immutable parts; the parity benchmark, not the assumption, is the
+contract.
 
 ## Alternatives considered
 
@@ -125,9 +141,13 @@ on the disabled path) — accepted, and guarded by the parity benchmark.
   Rejected: ~250 call-site edits, overwhelmingly in tests, for identical emitted
   telemetry. The server-boundary span produces the same tree with none of the
   store-package churn.
-- **`if telemetryEnabled` guards on the hot path.** Rejected: OTel's own no-op
-  providers make the disabled path free without scattering conditionals; the
-  parity benchmark is the backstop.
+- **`if telemetryEnabled` guards on the hot path.** Rejected, and the rejection
+  held under scrutiny: instead of scattering conditionals, per-command attribute
+  memoization (see the M17 amendment above) restores parity while keeping the
+  instruments unconditional. The no-op providers do **not** make the disabled path
+  free on their own — attribute/option construction allocates regardless — but
+  precomputing the immutable parts closes the gap without a guard. The parity
+  benchmark is the backstop that proved this necessary.
 - **Nested `aof.fsync` span inside the writer.** Rejected for M16: would require
   a `ctx` on `Writer.Append` (10+ aof test call sites) and touch the durability
   path; the append span's latency + the fsync-duration metric already carry the
