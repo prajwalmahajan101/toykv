@@ -123,6 +123,11 @@ type ServerOpts struct {
 	TLSKey  string
 	// ExtraArgs are appended to the server command line.
 	ExtraArgs []string
+	// BindHost overrides the bind host (default "127.0.0.1"); a free port is
+	// still chosen and readiness always probes 127.0.0.1:<port>, so an
+	// all-interfaces host ("0.0.0.0") works. Used by protected-mode tests
+	// that need a non-loopback bind that still starts.
+	BindHost string
 }
 
 // Server is a running toykv subprocess.
@@ -145,7 +150,12 @@ func StartServer(t *testing.T, opts ServerOpts) *Server {
 	}
 
 	port := freePort(t)
-	addr := "127.0.0.1:" + strconv.Itoa(port)
+	probeAddr := "127.0.0.1:" + strconv.Itoa(port)
+	bindHost := opts.BindHost
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+	}
+	addr := net.JoinHostPort(bindHost, strconv.Itoa(port))
 
 	dir := opts.Dir
 	if dir == "" {
@@ -167,7 +177,7 @@ func StartServer(t *testing.T, opts ServerOpts) *Server {
 
 	//nolint:gosec // G204: builtBinaries.Server is a path we built ourselves in TestMain.
 	cmd := exec.Command(builtBinaries.Server, args...)
-	s := &Server{Addr: addr, Dir: dir, cmd: cmd, t: t}
+	s := &Server{Addr: probeAddr, Dir: dir, cmd: cmd, t: t}
 	cmd.Stderr = &s.stderr
 	cmd.Stdout = io.Discard
 
@@ -175,10 +185,10 @@ func StartServer(t *testing.T, opts ServerOpts) *Server {
 		t.Fatalf("start server: %v", err)
 	}
 
-	if err := waitReady(addr, 3*time.Second, opts.TLSCert != ""); err != nil {
+	if err := waitReady(probeAddr, 3*time.Second, opts.TLSCert != ""); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		t.Fatalf("server not ready on %s: %v\nstderr:\n%s", addr, err, s.stderr.String())
+		t.Fatalf("server not ready on %s: %v\nstderr:\n%s", probeAddr, err, s.stderr.String())
 	}
 
 	t.Cleanup(s.Stop)
@@ -205,6 +215,43 @@ func (s *Server) Stop() {
 
 // Stderr returns the server's accumulated stderr (handy on failure).
 func (s *Server) Stderr() string { return s.stderr.String() }
+
+// RunServerExpectRefusal launches the server binary bound to bindHost (a
+// non-loopback host, e.g. "0.0.0.0") with extraArgs and asserts it exits
+// non-zero before serving — the protected-mode startup refusal. It returns
+// the process stderr so the caller can check the message. Persistence is
+// disabled (-dir "").
+func RunServerExpectRefusal(t *testing.T, bindHost string, extraArgs ...string) string {
+	t.Helper()
+	if builtBinaries.Server == "" {
+		t.Fatalf("e2e: server binary not built; call BuildBinaries in TestMain")
+	}
+	port := freePort(t)
+	addr := net.JoinHostPort(bindHost, strconv.Itoa(port))
+	args := append([]string{"-addr", addr, "-dir", "", "-log-level", "warn"}, extraArgs...)
+
+	//nolint:gosec // G204: builtBinaries.Server is a path we built ourselves in TestMain.
+	cmd := exec.Command(builtBinaries.Server, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("server started on %s but a protected-mode refusal was expected;\nstderr:\n%s", addr, stderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("server did not exit on %s (expected refusal);\nstderr:\n%s", addr, stderr.String())
+	}
+	return stderr.String()
+}
 
 // freePort probes a free TCP port by binding 127.0.0.1:0 and closing.
 // There is a tiny race window before the subprocess re-binds, but in practice
