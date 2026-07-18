@@ -10,6 +10,17 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-07-18
+
+Second release. Closes M10–M17 of the roadmap: a deployable,
+**safe-by-default**, **observable** single-node KV. The `2.0.0` major is
+*earned*, not defaulted — everything in M10–M14 and M16 is additive (opt-in
+RESP3, backward-compatible AOF v3 replay, off-by-default OpenTelemetry), so by
+semver alone the arc is a `1.x`. **M15's protected mode** is the one deliberate
+break: v1 served any bind with no auth; v2 refuses a non-loopback bind without
+`-requirepass` or TLS unless `-protected-mode no` is passed. That single change
+to the deployment contract is what makes the major honest.
+
 ### Added
 
 - Atomic keyspace commands (M15, tag `m15`): `RENAME`, `RENAMENX`, and
@@ -62,6 +73,32 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
   its RESP2 equivalent at a single point, so RESP2 clients (incl.
   `redis-cli` default) are unaffected — see
   [ADR-0011](./docs/adr/0011-resp3-negotiation-and-protocol-state.md).
+- `INFO` and `SCAN` (M13, tag `m13`). `INFO` reports uptime, `dbsize`,
+  `appendfsync` policy, AOF byte size, and replay stats as Redis-faithful
+  `# Section\nkey:value` text — a verbatim string (`=`) on RESP3, a bulk
+  string on RESP2 (never a map, preserving `go-redis .Info()` /
+  `redis-cli info` parsing). `SCAN cursor [MATCH pattern] [COUNT n]`
+  iterates the typed keyspace via an insertion-sequence cursor, returning
+  every key present for the whole scan under concurrent mutation — see
+  [ADR-0014](./docs/adr/0014-scan-cursor-and-info-wire-format.md).
+- TUI v2 (M14, tag `m14`): multi-type value rendering (distinct string /
+  list / hash views driven by `TYPE`), `SCAN`-backed paging in the keys
+  pane (removes the v1 large-keyspace caveat), an AUTH prompt on connect
+  when the server has `requirepass`, and an `INFO`-driven status bar
+  (fsync policy, dbsize, uptime) — on the same `internal/client` package.
+  See [ADR-0015](./docs/adr/0015-tui-v2-scan-paging-and-tls-deferral.md).
+- Observability (M16, tag `m16`): OpenTelemetry logs, metrics, and traces
+  over OTLP (gRPC | HTTP) to the Grafana **LGTM** stack. RED metrics per
+  command, a connection→command→{store,aof} trace tree, and
+  trace-correlated structured logs via an `slog` bridge. **Off by
+  default** — with no `-otel-endpoint` the SDK no-op providers are
+  installed and the hot path stays allocation-light, so behaviour and
+  benchmarks match the pre-M16 binary (semver unchanged; M15 still earns
+  the major). Config: `-otel-endpoint`, `-otel-protocol`,
+  `-otel-service-name`, `-otel-sampling`, `-otel-capture-keys`; a
+  `deploy/` `grafana/otel-lgtm` stack for local viewing. Telemetry export
+  failures are logged and dropped — they never fail a command. See
+  [ADR-0017](./docs/adr/0017-opentelemetry-signal-model-and-otlp-export.md).
 
 ### Changed
 
@@ -78,6 +115,27 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
   v1.
 
 ### Fixed
+
+- Telemetry disabled-path overhead (M17): with OpenTelemetry compiled in
+  but off, the RED chokepoint rebuilt attribute sets and metric options
+  per command, costing ~18–21% throughput vs the pre-M16 binary
+  (attribute/option construction allocates even against no-op providers).
+  Per-command instrument attributes are now memoized at construction —
+  **no `if enabled` hot-path guard added** — restoring `SET` to parity and
+  `GET` to within ~7% (disabled path 29 → 14 allocs/op). See the M17
+  amendment in [ADR-0017](./docs/adr/0017-opentelemetry-signal-model-and-otlp-export.md).
+
+### Security
+
+- RESP codec pre-auth DoS bounds (M17): the frame decoder capped bulk-string
+  size but not array element count or nesting depth, so a single tiny packet
+  from any peer that could reach the port could drive an unbounded
+  `make([]Value, n)` (memory-amplification OOM) or unbounded recursion
+  (stack-exhaustion fatal panic) — **before** the auth gate. Added
+  `MaxArrayLen` (1 048 576, matching Redis `proto-max-multibulk-len`) and
+  `MaxDepth` (32), both rejected with `ErrTooLarge` before any allocation.
+  Found by the v2.0.0 release-gate security review — see
+  [`docs/SECURITY-REVIEW-v2.md`](./docs/SECURITY-REVIEW-v2.md).
 
 ## [v1.0.0] — 2026-06-17
 

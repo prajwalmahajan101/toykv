@@ -24,7 +24,7 @@ import (
 // serverVersion is reported in the HELLO handshake's `version` field.
 // It is a placeholder until the M15 release wires the ldflags build
 // version through Config, matching the CLI/TUI `-version` plumbing.
-const serverVersion = "2.0.0-dev"
+const serverVersion = "2.0.0"
 
 // Version returns the server version string, exposed so the command layer
 // (cmd/toykv) can stamp it onto the OpenTelemetry resource (service.version)
