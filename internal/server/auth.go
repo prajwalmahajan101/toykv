@@ -34,11 +34,13 @@ func authenticate(s *Server, cs *connState, user, pass []byte) resp.Value {
 	if !userOK || !passOK {
 		s.tel.Metrics.AuthAttempts.Add(context.Background(), 1, resultAttr("wrongpass"))
 		span.AddEvent("auth.failure") // never records the password (M12 no-oracle)
+		s.log.DebugContext(cs.context(), "auth attempt", "result", "wrongpass")
 		return resp.Error(errWrongPass)
 	}
 	cs.authenticated = true
 	s.tel.Metrics.AuthAttempts.Add(context.Background(), 1, resultAttr("success"))
 	span.AddEvent("auth.success")
+	s.log.DebugContext(cs.context(), "auth attempt", "result", "success")
 	return resp.String("OK")
 }
 

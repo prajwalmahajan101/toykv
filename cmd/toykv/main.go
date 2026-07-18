@@ -110,6 +110,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	// Tee console logs to OTLP (Loki) when telemetry is on; a no-op wrap
+	// otherwise. Records logged with a span context carry the trace id.
+	log = slog.New(telemetry.NewSlogHandler(log.Handler(), providers))
 	// Registered before s.Close so teardown order is: stop serving →
 	// flush+close AOF (s.Close) → flush+close telemetry exporters.
 	defer func() {
