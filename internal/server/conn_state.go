@@ -1,6 +1,10 @@
 package server
 
-import "github.com/prajwalmahajan101/toykv/internal/resp"
+import (
+	"context"
+
+	"github.com/prajwalmahajan101/toykv/internal/resp"
+)
 
 // connState holds per-connection protocol state. One is created per
 // accepted connection in handleConn and threaded through dispatch to the
@@ -19,6 +23,21 @@ type connState struct {
 	// marks every connection authenticated at accept, so gating stays a
 	// single condition; otherwise AUTH / HELLO … AUTH flips it.
 	authenticated bool
+	// ctx carries the per-connection telemetry context (M16). It is stamped
+	// in handleConn and, once tracing lands, roots the connection span so
+	// command/store/aof spans thread through it. May be nil on connStates
+	// built directly (replay, tests) — use context() to read it safely.
+	ctx context.Context
+}
+
+// context returns the connection's telemetry context, defaulting to
+// context.Background() when unset so a literal connState (replay, tests) is
+// always safe to pass to instrumentation.
+func (cs *connState) context() context.Context {
+	if cs.ctx != nil {
+		return cs.ctx
+	}
+	return context.Background()
 }
 
 // newConnState returns the default state for a freshly accepted
