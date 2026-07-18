@@ -309,7 +309,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M14 | TUI v2 | ✅ | [#32](https://github.com/prajwalmahajan101/toykv/pull/32) | `m14` |
 | M15 | Hardening: protected mode + atomic keyspace ops | ✅ | [#33](https://github.com/prajwalmahajan101/toykv/pull/33) | `m15` |
 | M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ✅ | [#35](https://github.com/prajwalmahajan101/toykv/pull/35) | `m16` |
-| M17 | Bench + polish + v2.0.0 | ⏳ Planned (committed) | — | `v2.0.0` |
+| M17 | Bench + polish + v2.0.0 | 🚧 Release PR open | [#36](https://github.com/prajwalmahajan101/toykv/pull/36) | `v2.0.0` (pending merge + tag) |
 
 ## Changes from the previous roadmap
 
