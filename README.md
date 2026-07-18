@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml)
 
-> Single-node in-memory KV store in Go. RESP2 wire protocol (RESP3 opt-in via `HELLO 3`), AOF persistence, TTL, companion CLI and TUI.
+> Single-node in-memory KV store in Go — **deployable, safe-by-default, observable**. RESP2 wire protocol (RESP3 opt-in via `HELLO 3`), string/list/hash value types, AOF persistence, TTL, `AUTH`+TLS with a protected-mode default, `INFO`/`SCAN` introspection, OpenTelemetry (logs/metrics/traces → LGTM), companion CLI and TUI.
 
 Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (append, replay, durable), toykv exercises the **map** pattern (in-memory, mutable, expirable). Two foundational network-server primitives, one Go module each.
 
-**Status:** M0–M9 shipped. v1.0.0 cut. See [ROADMAP](./docs/ROADMAP.md).
+**Status:** M0–M17 shipped — v2.0.0 (deployable, safe-by-default, observable single-node KV). See [ROADMAP](./docs/ROADMAP.md) and [CHANGELOG](./CHANGELOG.md).
 
 ## What it is
 
@@ -22,7 +22,7 @@ Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (appen
 - Production-ready (no auth, no TLS).
 - Multi-node, replicated, or clustered.
 
-> ⚠ **Security limits.** v1 has **no auth, no TLS, no IP allowlist**. Bind to `127.0.0.1` and do not expose to networks you don't fully trust. The full threat model lives in [SECURITY.md](./docs/SECURITY.md); [PRD §4 Non-goals](./docs/PRD.md#4-non-goals-v1) explains what's deliberately out of scope.
+> 🔒 **Security posture (v2).** `AUTH` (`-requirepass`, constant-time compare) and TLS (`-tls-cert`/`-tls-key`, min 1.2) lift v1's localhost-only ceiling, and **protected mode** refuses an unauthenticated non-loopback bind by default — so an accidental `0.0.0.0` exposure fails closed rather than serving the world. Still single-node with no IP allowlist and no RBAC. The full threat model lives in [SECURITY.md](./docs/SECURITY.md); the v2.0.0 release-gate audit (incl. two pre-auth codec DoS bounds it added) is in [SECURITY-REVIEW-v2.md](./docs/SECURITY-REVIEW-v2.md).
 
 ## Install
 
@@ -136,6 +136,20 @@ If your fresh clone doesn't carry the GIF yet, here's the static rendering:
 | `SCAN cursor [MATCH pattern] [COUNT n]` | 1–5 | `*2` (cursor + `*N`) | Cursor-based keyspace iteration; `0` cursor starts, `0` reply ends. Large-keyspace alternative to `KEYS` |
 | `FLUSHDB` | 0 | `+OK` | |
 | `DBSIZE` | 0 | `:N` | |
+| `TYPE key` | 1 | `+status` | `string` / `list` / `hash` / `none`. Underpins the TUI + `SCAN` rendering. See [ADR-0012](./docs/adr/0012-tagged-union-store-and-aof-v3.md) |
+| `LPUSH key val [val …]` | ≥2 | `:N` | Prepend; new list length. `-WRONGTYPE` on a non-list key |
+| `RPUSH key val [val …]` | ≥2 | `:N` | Append; new list length |
+| `LPOP key` / `RPOP key` | 1 | `$bulk` / `$-1` | Pop head / tail; nil on empty or absent |
+| `LLEN key` | 1 | `:N` | List length (0 if absent) |
+| `LRANGE key start stop` | 3 | `*N` | Inclusive range; negative indices from the tail |
+| `LINDEX key index` | 2 | `$bulk` / `$-1` | Element at index; negative from the tail |
+| `HSET key field val [field val …]` | ≥3 | `:N` | Fields newly added |
+| `HGET key field` | 2 | `$bulk` / `$-1` | Nil if field/key absent |
+| `HDEL key field [field …]` | ≥2 | `:N` | Fields removed |
+| `HEXISTS key field` | 2 | `:0` / `:1` | |
+| `HKEYS key` / `HVALS key` | 1 | `*N` | Field names / values |
+| `HLEN key` | 1 | `:N` | Field count |
+| `HGETALL key` | 1 | `%map` / `*N` | Native RESP3 map; flat array on RESP2 |
 | `INFO [section]` | 0–1 | `$bulk` / `=verbatim` | `# Section\nkey:value` server introspection (verbatim on RESP3); optional section filter |
 | `BGREWRITEAOF` | 0 | `+OK` | Async; see [ADR-0005](./docs/adr/0005-bgrewriteaof-dual-write-and-tmp-cleanup.md) |
 

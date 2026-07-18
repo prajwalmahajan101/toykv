@@ -393,3 +393,38 @@ v1 binds to localhost by default. Documented in [`SECURITY.md`](./SECURITY.md). 
 | Pub/sub for TUI live updates | Bloats v1 beyond a long weekend; polling is sufficient and honest |
 | Custom binary wire format | Defeats the "redis-cli works" requirement |
 | Config file (YAML/TOML) | Flags are sufficient; one source of truth |
+
+## 16. v2.0 delta (M10–M17)
+
+The v1 architecture above is unchanged in shape; v2 extends existing seams
+rather than adding layers. Component-level deltas:
+
+- **Wire (M10).** `internal/resp` gains RESP3 encoders and a per-connection
+  protocol-version state on `connState`; a protocol-aware writer downgrades RESP3
+  frames to their RESP2 equivalents at a single point, so RESP2 clients are
+  byte-unaffected (ADR-0011).
+- **Store model (M11).** The store entry becomes a tagged union (string / list /
+  hash) with a type byte; `WRONGTYPE` is enforced at the store boundary. The AOF
+  format bumps to **v3** (typed records); replay accepts v1/v2/v3 and upgrades an
+  old header in place on open (ADR-0012).
+- **Connection layer (M12).** AUTH (`requirepass`, constant-time compare) and
+  TLS (`crypto/tls` listener wrap, min 1.2) live at the connection layer; a
+  dispatch-level gate lets an unauthenticated connection run only `AUTH`/`HELLO`/
+  `PING` (ADR-0013).
+- **Introspection (M13).** `INFO` (Redis-faithful text over the RESP3-aware
+  writer) and a `SCAN` insertion-sequence cursor over the typed keyspace
+  (ADR-0014).
+- **Safe-by-default (M15).** `checkProtectedMode` runs inside `server.New`
+  (before AOF replay and the listener) and refuses a non-loopback bind without
+  auth/TLS — the deliberate break that earns `2.0.0`. Atomic `RENAME`/`RENAMENX`/
+  `COPY` are single store-mutex moves, no AOF format bump (ADR-0016).
+- **Observability (M16).** A new `internal/telemetry` package is the single OTel
+  owner; providers are SDK no-ops unless `-otel-endpoint` is set, so
+  instrumentation is unconditional with no hot-path guard. RED metrics per
+  command, a connection→command→{store,aof} span tree, and trace-correlated logs,
+  exported over OTLP to the LGTM stack; export failures never fail a command
+  (ADR-0017). Per-command instrument attributes are memoized (M17) to keep the
+  disabled path allocation-light without a guard.
+- **Hardening (M17).** The RESP codec bounds array element count and nesting
+  depth (pre-auth DoS), and the release re-benches typed workloads and cuts
+  `v2.0.0` — the earned major (protected mode is the one breaking change).
