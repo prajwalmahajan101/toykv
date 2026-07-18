@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"strconv"
 
@@ -15,16 +16,16 @@ import (
 // cmdLPush implements LPUSH key value [value ...]. Returns the new list
 // length. Values push left-to-right, so the last argument ends at the
 // head (Redis semantics).
-func cmdLPush(s *Server, _ *connState, argv [][]byte) resp.Value {
-	return pushCmd(s, argv, true)
+func cmdLPush(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return pushCmd(cs.context(), s, argv, true)
 }
 
 // cmdRPush implements RPUSH key value [value ...].
-func cmdRPush(s *Server, _ *connState, argv [][]byte) resp.Value {
-	return pushCmd(s, argv, false)
+func cmdRPush(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return pushCmd(cs.context(), s, argv, false)
 }
 
-func pushCmd(s *Server, argv [][]byte, front bool) resp.Value {
+func pushCmd(ctx context.Context, s *Server, argv [][]byte, front bool) resp.Value {
 	var (
 		n   int
 		err error
@@ -37,7 +38,7 @@ func pushCmd(s *Server, argv [][]byte, front bool) resp.Value {
 	if errors.Is(err, store.ErrWrongType) {
 		return wrongTypeErr()
 	}
-	if err := s.appendIfLive(argv); err != nil {
+	if err := s.appendIfLive(ctx, argv); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(int64(n))
@@ -46,16 +47,16 @@ func pushCmd(s *Server, argv [][]byte, front bool) resp.Value {
 // cmdLPop implements LPOP key. Returns the popped element or null when
 // the key is missing. Appends only when an element was actually
 // removed — a no-op pop must not land in the AOF.
-func cmdLPop(s *Server, _ *connState, argv [][]byte) resp.Value {
-	return popCmd(s, argv, true)
+func cmdLPop(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return popCmd(cs.context(), s, argv, true)
 }
 
 // cmdRPop implements RPOP key.
-func cmdRPop(s *Server, _ *connState, argv [][]byte) resp.Value {
-	return popCmd(s, argv, false)
+func cmdRPop(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return popCmd(cs.context(), s, argv, false)
 }
 
-func popCmd(s *Server, argv [][]byte, front bool) resp.Value {
+func popCmd(ctx context.Context, s *Server, argv [][]byte, front bool) resp.Value {
 	var (
 		v   []byte
 		ok  bool
@@ -72,7 +73,7 @@ func popCmd(s *Server, argv [][]byte, front bool) resp.Value {
 	if !ok {
 		return resp.Null()
 	}
-	if err := s.appendIfLive(argv); err != nil {
+	if err := s.appendIfLive(ctx, argv); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Bulk(v)

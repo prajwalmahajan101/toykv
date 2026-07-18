@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/prajwalmahajan101/toykv/internal/aof"
@@ -47,15 +48,20 @@ func (s *Server) runRewrite() {
 		s.rewriteMu.Unlock()
 	}()
 
+	// aof.rewrite span (§3): a background root — BGREWRITEAOF replies before
+	// the rewrite finishes, so it has no live command span to nest under.
+	ctx, span := s.tel.Tracer.Start(context.Background(), "aof.rewrite")
+	defer span.End()
+
 	start := time.Now()
 	r := aof.NewRewriter(s.aof, s.snapshotForRewrite)
-	err := r.Rewrite(context.Background())
+	err := r.Rewrite(ctx)
 
 	// §1.5 rewrite metrics: outcome + wall time.
-	ctx := context.Background()
 	result := "ok"
 	if err != nil {
 		result = "error"
+		span.SetStatus(codes.Error, err.Error())
 	}
 	s.tel.Metrics.AOFRewrites.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
 	s.tel.Metrics.AOFRewriteDuration.Record(ctx, time.Since(start).Seconds())

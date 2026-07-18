@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Sweeper periodically samples the store for expired keys and evicts
@@ -19,7 +22,12 @@ type Sweeper struct {
 	batch     int           // keys sampled per pass (default 20).
 	threshold float64       // expired-fraction above which a tick loops.
 	maxLoops  int           // hard cap on per-tick passes; bounds lock-hold time.
+	tracer    trace.Tracer  // sweeper.tick span; nil ⇒ no span (M16 §3).
 }
+
+// SetTracer installs the tracer for the sweeper.tick span. Called by the
+// server after construction; nil (the default) means no span is emitted.
+func (sw *Sweeper) SetTracer(t trace.Tracer) { sw.tracer = t }
 
 // SweeperOptions configures a Sweeper. Zero values fall back to the
 // LLD §3.3 defaults: 1s tick, 20-key sample, 0.25 threshold, 16 max
@@ -75,6 +83,10 @@ func (sw *Sweeper) Run(ctx context.Context) {
 // total mutex hold time per scheduled tick.
 func (sw *Sweeper) tick(now time.Time) (totalSampled, totalEvicted int) {
 	start := time.Now()
+	var span trace.Span
+	if sw.tracer != nil {
+		_, span = sw.tracer.Start(context.Background(), "sweeper.tick")
+	}
 	// Record §1.4 sweeper metrics once per tick, regardless of which return
 	// fires. keys.expired{sweeper} shares the counter with the lazy path.
 	defer func() {
@@ -86,6 +98,13 @@ func (sw *Sweeper) tick(now time.Time) (totalSampled, totalEvicted int) {
 		m.SweeperDuration.Record(ctx, time.Since(start).Seconds())
 		if totalEvicted > 0 {
 			m.KeysExpired.Add(ctx, int64(totalEvicted), sweeperExpiryAttr)
+		}
+		if span != nil {
+			span.SetAttributes(
+				attribute.Int("sampled", totalSampled),
+				attribute.Int("evicted", totalEvicted),
+			)
+			span.End()
 		}
 	}()
 	for i := 0; i < sw.maxLoops; i++ {

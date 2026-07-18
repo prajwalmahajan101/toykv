@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
 	"strconv"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
@@ -20,15 +24,47 @@ import (
 // behaviour is to drop the conn and exit. v1 stops at "drop the conn
 // and let the operator decide" — restart will re-derive state from the
 // AOF, which is the source of truth on disk.
-func (s *Server) appendIfLive(argv [][]byte) error {
+func (s *Server) appendIfLive(ctx context.Context, argv [][]byte) error {
 	if s.aof == nil {
 		return nil
 	}
+	// aof.append span, child of the command span (sibling of store.<op>). It
+	// wraps the whole Append — so a slow fsync inside surfaces as span
+	// latency — without touching the append→fsync ordering (T13 durability).
+	_, span := s.tel.Tracer.Start(ctx, "aof.append")
+	span.SetAttributes(
+		attribute.Int("bytes", respRecordLen(argv)),
+		attribute.String("policy", s.cfg.FsyncPolicy.String()),
+	)
+	defer span.End()
 	if err := s.aof.Append(argv); err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		s.log.Error("aof append failed", "err", err, "argv0", string(argv[0]))
 		return err
 	}
 	return nil
+}
+
+// respRecordLen mirrors the AOF writer's record-size calc so the aof.append
+// span can report bytes without re-encoding.
+func respRecordLen(argv [][]byte) int {
+	n := 1 + decDigits(len(argv)) + 2
+	for _, a := range argv {
+		n += 1 + decDigits(len(a)) + 2 + len(a) + 2
+	}
+	return n
+}
+
+func decDigits(n int) int {
+	if n == 0 {
+		return 1
+	}
+	d := 0
+	for n > 0 {
+		d++
+		n /= 10
+	}
+	return d
 }
 
 // cmdPing implements PING. With no argument it returns +PONG. With one
@@ -81,7 +117,7 @@ func wrongTypeErr() resp.Value {
 // PXAT preserves wall-clock semantics across restart (ADR-0004) — a
 // relative `PX <ms>` would silently extend the entry's life by the
 // downtime, which is the bug the format was designed to avoid.
-func cmdSet(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdSet(s *Server, cs *connState, argv [][]byte) resp.Value {
 	opts, err := parseSetOptions(argv[3:], s.now())
 	if err != nil {
 		return resp.Error(err.Error())
@@ -92,7 +128,7 @@ func cmdSet(s *Server, _ *connState, argv [][]byte) resp.Value {
 		return resp.Null()
 	}
 	canonical := renderCanonicalSet(argv[1], argv[2], opts.ExpireAt)
-	if err := s.appendIfLive(canonical); err != nil {
+	if err := s.appendIfLive(cs.context(), canonical); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.OK()
@@ -189,14 +225,14 @@ func computeExpireAt(token string, n int64, now time.Time) (time.Time, error) {
 
 // cmdDel removes one or more keys and returns the count actually
 // deleted. Appends only when at least one key was removed.
-func cmdDel(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdDel(s *Server, cs *connState, argv [][]byte) resp.Value {
 	keys := make([]string, 0, len(argv)-1)
 	for _, k := range argv[1:] {
 		keys = append(keys, string(k))
 	}
 	n := s.store.Del(keys...)
 	if n > 0 {
-		if err := s.appendIfLive(argv); err != nil {
+		if err := s.appendIfLive(cs.context(), argv); err != nil {
 			return resp.Error("ERR aof append failed")
 		}
 	}
@@ -213,10 +249,14 @@ func cmdExists(s *Server, _ *connState, argv [][]byte) resp.Value {
 	return resp.Int(int64(s.store.Exists(keys...)))
 }
 
-func cmdIncr(s *Server, _ *connState, argv [][]byte) resp.Value { return incrDecr(s, argv, true) }
-func cmdDecr(s *Server, _ *connState, argv [][]byte) resp.Value { return incrDecr(s, argv, false) }
+func cmdIncr(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return incrDecr(cs.context(), s, argv, true)
+}
+func cmdDecr(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return incrDecr(cs.context(), s, argv, false)
+}
 
-func incrDecr(s *Server, argv [][]byte, up bool) resp.Value {
+func incrDecr(ctx context.Context, s *Server, argv [][]byte, up bool) resp.Value {
 	var (
 		n   int64
 		err error
@@ -236,7 +276,7 @@ func incrDecr(s *Server, argv [][]byte, up bool) resp.Value {
 	case err != nil:
 		return resp.Error(fmt.Sprintf("ERR %s", err))
 	}
-	if err := s.appendIfLive(argv); err != nil {
+	if err := s.appendIfLive(ctx, argv); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(n)
@@ -260,9 +300,9 @@ func cmdKeys(s *Server, _ *connState, argv [][]byte) resp.Value {
 }
 
 // cmdFlushDB removes every key and persists the act.
-func cmdFlushDB(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdFlushDB(s *Server, cs *connState, argv [][]byte) resp.Value {
 	s.store.FlushDB()
-	if err := s.appendIfLive(argv); err != nil {
+	if err := s.appendIfLive(cs.context(), argv); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.OK()
@@ -277,43 +317,43 @@ func cmdDBSize(s *Server, _ *connState, _ [][]byte) resp.Value {
 // and the TTL was set, 0 otherwise. On success it appends the canonical
 // PEXPIREAT form so replay never re-evaluates a relative duration —
 // see ADR-0004.
-func cmdExpire(s *Server, _ *connState, argv [][]byte) resp.Value {
-	return setExpiry(s, argv, time.Second)
+func cmdExpire(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return setExpiry(cs.context(), s, argv, time.Second)
 }
 
 // cmdPExpire implements PEXPIRE key milliseconds.
-func cmdPExpire(s *Server, _ *connState, argv [][]byte) resp.Value {
-	return setExpiry(s, argv, time.Millisecond)
+func cmdPExpire(s *Server, cs *connState, argv [][]byte) resp.Value {
+	return setExpiry(cs.context(), s, argv, time.Millisecond)
 }
 
-func setExpiry(s *Server, argv [][]byte, unit time.Duration) resp.Value {
+func setExpiry(ctx context.Context, s *Server, argv [][]byte, unit time.Duration) resp.Value {
 	n, err := strconv.ParseInt(string(argv[2]), 10, 64)
 	if err != nil {
 		return resp.Error("ERR value is not an integer or out of range")
 	}
 	expireAt := s.now().Add(time.Duration(n) * unit)
-	return applyExpire(s, argv[1], expireAt)
+	return applyExpire(ctx, s, argv[1], expireAt)
 }
 
 // cmdPExpireAt implements PEXPIREAT key unix-milliseconds. The absolute
 // form is canonical on the wire AND in the AOF — it's the same shape
 // EXPIRE / PEXPIRE rewrite themselves to before appending.
-func cmdPExpireAt(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdPExpireAt(s *Server, cs *connState, argv [][]byte) resp.Value {
 	ms, err := strconv.ParseInt(string(argv[2]), 10, 64)
 	if err != nil {
 		return resp.Error("ERR value is not an integer or out of range")
 	}
-	return applyExpire(s, argv[1], time.UnixMilli(ms))
+	return applyExpire(cs.context(), s, argv[1], time.UnixMilli(ms))
 }
 
 // applyExpire is the shared tail for EXPIRE / PEXPIRE / PEXPIREAT.
 // store.Expire returns false for missing or already-expired keys; in
 // that case we neither append nor return 1.
-func applyExpire(s *Server, key []byte, expireAt time.Time) resp.Value {
+func applyExpire(ctx context.Context, s *Server, key []byte, expireAt time.Time) resp.Value {
 	if !s.store.Expire(string(key), expireAt) {
 		return resp.Int(0)
 	}
-	if err := s.appendIfLive(renderPExpireAt(key, expireAt)); err != nil {
+	if err := s.appendIfLive(ctx, renderPExpireAt(key, expireAt)); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(1)
@@ -358,11 +398,11 @@ func ttlReply(d time.Duration, unit time.Duration) resp.Value {
 // only when a TTL was actually cleared — replay against an empty store
 // applies it as a no-op (PERSIST on missing returns 0, no further
 // effect), which is the desired idempotent shape.
-func cmdPersist(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdPersist(s *Server, cs *connState, argv [][]byte) resp.Value {
 	if !s.store.Persist(string(argv[1])) {
 		return resp.Int(0)
 	}
-	if err := s.appendIfLive(argv); err != nil {
+	if err := s.appendIfLive(cs.context(), argv); err != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(1)

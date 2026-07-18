@@ -16,7 +16,7 @@ import (
 // cmdRename implements RENAME key newkey. Redis returns +OK on success and
 // "-ERR no such key" when the source is absent. The destination is
 // overwritten; TTL and value type travel with the key.
-func cmdRename(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdRename(s *Server, cs *connState, argv [][]byte) resp.Value {
 	src, dst := string(argv[1]), string(argv[2])
 	err := s.store.Rename(src, dst)
 	if errors.Is(err, store.ErrNoKey) {
@@ -25,7 +25,7 @@ func cmdRename(s *Server, _ *connState, argv [][]byte) resp.Value {
 	// A self-rename (src == dst) mutated nothing persistent, so skip the
 	// append; every other success moved the key and must be durable.
 	if src != dst {
-		if aerr := s.appendIfLive(argv); aerr != nil {
+		if aerr := s.appendIfLive(cs.context(), argv); aerr != nil {
 			return resp.Error("ERR aof append failed")
 		}
 	}
@@ -35,7 +35,7 @@ func cmdRename(s *Server, _ *connState, argv [][]byte) resp.Value {
 // cmdRenameNX implements RENAMENX key newkey: move only when the
 // destination does not exist. Returns :1 on a move, :0 when the
 // destination exists, and "-ERR no such key" when the source is absent.
-func cmdRenameNX(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdRenameNX(s *Server, cs *connState, argv [][]byte) resp.Value {
 	moved, err := s.store.RenameNX(string(argv[1]), string(argv[2]))
 	if errors.Is(err, store.ErrNoKey) {
 		return resp.Error("ERR no such key")
@@ -43,7 +43,7 @@ func cmdRenameNX(s *Server, _ *connState, argv [][]byte) resp.Value {
 	if !moved {
 		return resp.Int(0)
 	}
-	if aerr := s.appendIfLive(argv); aerr != nil {
+	if aerr := s.appendIfLive(cs.context(), argv); aerr != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(1)
@@ -55,7 +55,7 @@ func cmdRenameNX(s *Server, _ *connState, argv [][]byte) resp.Value {
 // only for index 0 (which every real Redis client, incl. go-redis, sends by
 // default); any other index is out of range. An unknown token is a syntax
 // error.
-func cmdCopy(s *Server, _ *connState, argv [][]byte) resp.Value {
+func cmdCopy(s *Server, cs *connState, argv [][]byte) resp.Value {
 	replace := false
 	for i := 3; i < len(argv); {
 		switch upperASCII(argv[i]) {
@@ -85,7 +85,7 @@ func cmdCopy(s *Server, _ *connState, argv [][]byte) resp.Value {
 	if !copied {
 		return resp.Int(0)
 	}
-	if aerr := s.appendIfLive(argv); aerr != nil {
+	if aerr := s.appendIfLive(cs.context(), argv); aerr != nil {
 		return resp.Error("ERR aof append failed")
 	}
 	return resp.Int(1)

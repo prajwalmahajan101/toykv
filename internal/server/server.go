@@ -126,6 +126,7 @@ func New(cfg Config) (*Server, error) {
 		sweeper:   store.NewSweeper(cfg.Store, cfg.SweeperOpts),
 		startTime: cfg.NowFunc(),
 	}
+	s.sweeper.SetTracer(cfg.Telemetry.Tracer) // sweeper.tick span (§3)
 
 	if cfg.Dir != "" {
 		// Replay first so any AOF parse failure is surfaced before we
@@ -136,6 +137,14 @@ func New(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("server: aof replay: %w", err)
 		}
 		s.replayStats = stats
+		// aof.replay span (§3): a startup root, recorded before Accept.
+		_, replaySpan := s.tel.Tracer.Start(context.Background(), "aof.replay")
+		replaySpan.SetAttributes(
+			attribute.Int("records", stats.Records),
+			attribute.Int64("bytes", stats.Bytes),
+		)
+		replaySpan.End()
+
 		w, err := aof.Open(cfg.Dir, cfg.FsyncPolicy, aof.WithMetrics(cfg.Telemetry.Metrics))
 		if err != nil {
 			return nil, fmt.Errorf("server: aof open: %w", err)
