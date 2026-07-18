@@ -11,6 +11,16 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 )
 
+// recordKeyspace records a §1.3 keyspace hit or miss for a read command
+// (GET / HGET / LINDEX). A miss covers both an absent and an expired key.
+func (s *Server) recordKeyspace(hit bool) {
+	if hit {
+		s.tel.Metrics.KeyspaceHits.Add(context.Background(), 1)
+	} else {
+		s.tel.Metrics.KeyspaceMisses.Add(context.Background(), 1)
+	}
+}
+
 // resultAttr / protoAttr build the small bounded attribute sets shared by
 // the §1.2 connection/auth/TLS instruments, so call sites stay terse.
 func resultAttr(result string) metric.MeasurementOption {

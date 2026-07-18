@@ -1,12 +1,25 @@
 package store
 
 import (
+	"context"
 	"math"
 	"path"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/prajwalmahajan101/toykv/internal/telemetry"
+)
+
+// Pre-built attribute sets for keys.expired, so the eviction hot paths add a
+// data point without allocating a new attribute slice each call.
+var (
+	lazyExpiryAttr    = metric.WithAttributes(attribute.String("path", "lazy"))
+	sweeperExpiryAttr = metric.WithAttributes(attribute.String("path", "sweeper"))
 )
 
 // SetMode selects the conditional semantics of Set.
@@ -53,6 +66,19 @@ type Store struct {
 	// seqCounter assigns each newly created key a strictly increasing
 	// sequence (see entry.seq). Guarded by mu — all writers hold Lock.
 	seqCounter uint64
+	// metrics records keyspace telemetry (§1.3). Never nil: defaulted to a
+	// no-op handle in NewWithClock, replaced by the live one via SetMetrics
+	// when the server wires telemetry.
+	metrics *telemetry.Metrics
+}
+
+// SetMetrics installs the live telemetry handle. Call once during server
+// construction, before serving traffic; the store starts with a no-op
+// handle so it is always safe to record.
+func (s *Store) SetMetrics(m *telemetry.Metrics) {
+	if m != nil {
+		s.metrics = m
+	}
 }
 
 // nextSeq returns the next creation sequence. Callers MUST hold the write
@@ -77,6 +103,7 @@ func NewWithClock(now func() time.Time) *Store {
 	return &Store{
 		data:    make(map[string]entry),
 		nowFunc: now,
+		metrics: telemetry.NoopMetrics(),
 	}
 }
 
@@ -114,6 +141,7 @@ func (s *Store) Get(k string) ([]byte, bool, error) {
 	}
 	if e.expired(s.nowFunc()) {
 		delete(s.data, k)
+		s.metrics.KeysExpired.Add(context.Background(), 1, lazyExpiryAttr)
 		return nil, false, nil
 	}
 	if e.typ != typeString {

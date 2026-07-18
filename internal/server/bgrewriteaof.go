@@ -2,6 +2,10 @@ package server
 
 import (
 	"context"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/prajwalmahajan101/toykv/internal/aof"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
@@ -43,8 +47,20 @@ func (s *Server) runRewrite() {
 		s.rewriteMu.Unlock()
 	}()
 
+	start := time.Now()
 	r := aof.NewRewriter(s.aof, s.snapshotForRewrite)
-	if err := r.Rewrite(context.Background()); err != nil {
+	err := r.Rewrite(context.Background())
+
+	// §1.5 rewrite metrics: outcome + wall time.
+	ctx := context.Background()
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	s.tel.Metrics.AOFRewrites.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
+	s.tel.Metrics.AOFRewriteDuration.Record(ctx, time.Since(start).Seconds())
+
+	if err != nil {
 		s.log.Error("aof rewrite failed", "err", err)
 	}
 }

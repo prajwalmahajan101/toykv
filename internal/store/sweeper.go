@@ -74,6 +74,20 @@ func (sw *Sweeper) Run(ctx context.Context) {
 // expired fraction stays above threshold. The maxLoops cap bounds the
 // total mutex hold time per scheduled tick.
 func (sw *Sweeper) tick(now time.Time) (totalSampled, totalEvicted int) {
+	start := time.Now()
+	// Record §1.4 sweeper metrics once per tick, regardless of which return
+	// fires. keys.expired{sweeper} shares the counter with the lazy path.
+	defer func() {
+		ctx := context.Background()
+		m := sw.store.metrics
+		m.SweeperPasses.Add(ctx, 1)
+		m.SweeperSampled.Add(ctx, int64(totalSampled))
+		m.SweeperEvicted.Add(ctx, int64(totalEvicted))
+		m.SweeperDuration.Record(ctx, time.Since(start).Seconds())
+		if totalEvicted > 0 {
+			m.KeysExpired.Add(ctx, int64(totalEvicted), sweeperExpiryAttr)
+		}
+	}()
 	for i := 0; i < sw.maxLoops; i++ {
 		sampled, evicted := sw.store.sweepOnce(now, sw.batch)
 		totalSampled += sampled

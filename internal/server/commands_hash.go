@@ -38,6 +38,7 @@ func cmdHGet(s *Server, _ *connState, argv [][]byte) resp.Value {
 	if errors.Is(err, store.ErrWrongType) {
 		return wrongTypeErr()
 	}
+	s.recordKeyspace(ok)
 	if !ok {
 		return resp.Null()
 	}
