@@ -2,6 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 
 	"go.opentelemetry.io/otel"
@@ -61,8 +64,30 @@ type Providers struct {
 	// CaptureKeys mirrors Config.CaptureKeys for the store-span key helper.
 	CaptureKeys bool
 
+	// keySalt salts HashKey so a captured key hash cannot be reversed via a
+	// precomputed dictionary and does not correlate across process restarts.
+	keySalt     []byte
 	log         *slog.Logger
 	shutdownFns []func(context.Context) error
+}
+
+// HashKey returns a salted, truncated SHA-256 hex digest of a key, for the
+// opt-in store-span key attribute. The plaintext key never appears in any
+// signal; without CaptureKeys the server does not call this at all.
+func (p *Providers) HashKey(key string) string {
+	h := sha256.New()
+	h.Write(p.keySalt)
+	h.Write([]byte(key))
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// newKeySalt returns a random 16-byte salt. A crypto/rand failure is
+// non-fatal for telemetry — fall back to an empty salt (hashing still hides
+// the plaintext, just without cross-restart decorrelation).
+func newKeySalt() []byte {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return b
 }
 
 // Init builds the telemetry pipeline from cfg and installs the resulting
@@ -97,6 +122,7 @@ func newDisabled(cfg Config) *Providers {
 		Meter:       meter,
 		Metrics:     mx,
 		CaptureKeys: cfg.CaptureKeys,
+		keySalt:     newKeySalt(),
 		log:         cfg.Log,
 	}
 }
@@ -112,6 +138,7 @@ func Disabled() *Providers {
 		Tracer:  tracenoop.NewTracerProvider().Tracer(scopeName),
 		Meter:   meter,
 		Metrics: mx,
+		keySalt: newKeySalt(),
 		log:     slog.Default(),
 	}
 }

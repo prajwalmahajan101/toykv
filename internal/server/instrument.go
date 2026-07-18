@@ -8,9 +8,67 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 )
+
+// storeSpanOps classifies which commands produce a store.<op> span and how.
+// read commands get a hit attribute (for the value-returning ones); hasKey
+// commands carry a hashed key.hash when -otel-capture-keys is on. Commands
+// absent here (PING/ECHO/HELLO/AUTH/INFO/BGREWRITEAOF) do not touch the
+// keyspace and get only the command span.
+var storeSpanOps = map[string]struct{ read, hasKey bool }{
+	"GET": {true, true}, "SET": {false, true}, "DEL": {false, true},
+	"EXISTS": {true, true}, "INCR": {false, true}, "DECR": {false, true},
+	"TYPE": {true, true}, "TTL": {true, true}, "PTTL": {true, true},
+	"EXPIRE": {false, true}, "PEXPIRE": {false, true}, "PEXPIREAT": {false, true},
+	"PERSIST": {false, true}, "RENAME": {false, true}, "RENAMENX": {false, true},
+	"COPY": {false, true}, "KEYS": {true, false}, "SCAN": {true, false},
+	"DBSIZE": {true, false}, "FLUSHDB": {false, false},
+	"LPUSH": {false, true}, "RPUSH": {false, true}, "LPOP": {false, true},
+	"RPOP": {false, true}, "LLEN": {true, true}, "LRANGE": {true, true},
+	"LINDEX": {true, true},
+	"HSET":   {false, true}, "HGET": {true, true}, "HDEL": {false, true},
+	"HEXISTS": {true, true}, "HKEYS": {true, true}, "HVALS": {true, true},
+	"HLEN": {true, true}, "HGETALL": {true, true},
+}
+
+// startStoreSpan opens a store.<op> leaf span parented to the command span
+// (so it is a sibling of any aof.append span, matching the inventory tree).
+// Returns nil for non-keyspace commands. The command context is not swapped,
+// so the span records no children — it represents the store operation.
+func (s *Server) startStoreSpan(cmdCtx context.Context, name string, argv [][]byte) trace.Span {
+	op, ok := storeSpanOps[name]
+	if !ok {
+		return nil
+	}
+	_, span := s.tel.Tracer.Start(cmdCtx, "store."+strings.ToLower(name))
+	if op.hasKey && len(argv) >= 2 && s.tel.CaptureKeys {
+		span.SetAttributes(attribute.String("key.hash", s.tel.HashKey(string(argv[1]))))
+	}
+	return span
+}
+
+// finishStoreSpan sets the hit / error attributes from the reply and ends the
+// span. Safe on a nil span (non-keyspace command).
+func finishStoreSpan(span trace.Span, name string, reply resp.Value) {
+	if span == nil {
+		return
+	}
+	if storeSpanOps[name].read {
+		switch reply.Kind {
+		case resp.KindBulkString:
+			span.SetAttributes(attribute.Bool("hit", !reply.IsNull))
+		case resp.KindNull:
+			span.SetAttributes(attribute.Bool("hit", false))
+		}
+	}
+	if reply.Kind == resp.KindError && strings.HasPrefix(reply.Str, "WRONGTYPE") {
+		span.SetStatus(codes.Error, reply.Str)
+	}
+	span.End()
+}
 
 // recordKeyspace records a §1.3 keyspace hit or miss for a read command
 // (GET / HGET / LINDEX). A miss covers both an absent and an expired key.
@@ -65,11 +123,16 @@ func (s *Server) observeCommand(cs *connState, argv [][]byte) resp.Value {
 	cmdAttr := attribute.String("command", name)
 	m.CommandsInflight.Add(cmdCtx, 1, metric.WithAttributes(cmdAttr))
 
+	// store.<op> span (sibling of aof.append under the command span). The
+	// command context is left on cs so aof spans nest under command, not here.
+	storeSpan := s.startStoreSpan(cmdCtx, name, argv)
+
 	// Real wall-clock latency (monotonic via time.Since); independent of the
 	// injectable TTL clock, which must not distort measured duration.
 	start := time.Now()
 	reply := s.dispatch(cs, argv)
 	elapsed := time.Since(start)
+	finishStoreSpan(storeSpan, name, reply)
 
 	m.CommandsInflight.Add(cmdCtx, -1, metric.WithAttributes(cmdAttr))
 	m.CommandDuration.Record(cmdCtx, elapsed.Seconds(), metric.WithAttributes(cmdAttr))

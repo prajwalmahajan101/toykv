@@ -38,7 +38,7 @@ func initEnabled(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, fmt.Errorf("telemetry: build resource: %w", err)
 	}
 
-	p := &Providers{Enabled: true, CaptureKeys: cfg.CaptureKeys, log: cfg.Log}
+	p := &Providers{Enabled: true, CaptureKeys: cfg.CaptureKeys, keySalt: newKeySalt(), log: cfg.Log}
 
 	// Traces.
 	traceExp, err := newTraceExporter(ctx, cfg)

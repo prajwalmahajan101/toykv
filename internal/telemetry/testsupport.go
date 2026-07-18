@@ -45,6 +45,7 @@ func TestSpanProviders() (*Providers, *tracetest.SpanRecorder) {
 		Meter:       metricnoop.NewMeterProvider().Meter(scopeName),
 		Metrics:     NoopMetrics(),
 		CaptureKeys: true, // exercise the key-hash path in span tests
+		keySalt:     newKeySalt(),
 		log:         slog.Default(),
 		shutdownFns: []func(context.Context) error{tp.Shutdown},
 	}, sr
