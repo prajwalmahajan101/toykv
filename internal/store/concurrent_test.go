@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -147,6 +148,86 @@ func TestTTL_LockUpgradeRace_NoSpuriousMiss(t *testing.T) {
 	if reads.Load() < 1000 {
 		t.Fatalf("test was not exercised enough: only %d reads issued", reads.Load())
 	}
+}
+
+// TestRenameConcurrent_ExactlyOneWinner is the milestone-owned risk test
+// for M15 (ROADMAP §M15 concurrent-rename atomicity): N goroutines race to
+// RENAME the same source key. Because the move is a single store-mutex
+// critical section, exactly one must succeed (the rest see ErrNoKey once
+// the source is consumed), with no torn intermediate state, and the
+// surviving key must keep the source's value, TTL, and type. Run under
+// -race.
+func TestRenameConcurrent_ExactlyOneWinner(t *testing.T) {
+	const goroutines = 50
+
+	t.Run("distinct destinations", func(t *testing.T) {
+		clk := newFakeClock(fakeEpoch)
+		s := NewWithClock(clk.now)
+		s.RPush("src", []byte("a"), []byte("b"))
+		s.Expire("src", fakeEpoch.Add(1000*time.Second))
+
+		var wins atomic.Int64
+		var winner atomic.Value // string
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				dst := fmt.Sprintf("dst%d", i)
+				err := s.Rename("src", dst)
+				if err == nil {
+					wins.Add(1)
+					winner.Store(dst)
+				} else if !errors.Is(err, ErrNoKey) {
+					t.Errorf("Rename: unexpected error %v (want nil or ErrNoKey)", err)
+				}
+			}()
+		}
+		wg.Wait()
+
+		if n := wins.Load(); n != 1 {
+			t.Fatalf("got %d winners, want exactly 1", n)
+		}
+		dst := winner.Load().(string)
+		if typ, _ := s.Type(dst); typ != "list" {
+			t.Fatalf("survivor %q type = %q, want list", dst, typ)
+		}
+		if n, _ := s.LLen(dst); n != 2 {
+			t.Fatalf("survivor %q LLen = %d, want 2 (torn value?)", dst, n)
+		}
+		if ttl := s.TTL(dst); ttl <= 0 || ttl > 1000*time.Second {
+			t.Fatalf("survivor %q lost its TTL: %v", dst, ttl)
+		}
+		if got := s.DBSize(); got != 1 {
+			t.Fatalf("DBSize = %d, want 1 (exactly the survivor)", got)
+		}
+	})
+
+	t.Run("same destination", func(t *testing.T) {
+		s := New()
+		s.Set("src", []byte("v"), SetOpts{})
+
+		var wins atomic.Int64
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				if err := s.Rename("src", "dst"); err == nil {
+					wins.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		if n := wins.Load(); n != 1 {
+			t.Fatalf("got %d winners, want exactly 1", n)
+		}
+		if v, ok, _ := s.Get("dst"); !ok || string(v) != "v" {
+			t.Fatalf("dst = (%q,%v), want (v,true)", v, ok)
+		}
+	})
 }
 
 // TestMixedConcurrentReadWrite exists purely to give the race detector
