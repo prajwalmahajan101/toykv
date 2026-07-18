@@ -15,12 +15,18 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/aof"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
+	"github.com/prajwalmahajan101/toykv/internal/telemetry"
 )
 
 // serverVersion is reported in the HELLO handshake's `version` field.
 // It is a placeholder until the M15 release wires the ldflags build
 // version through Config, matching the CLI/TUI `-version` plumbing.
 const serverVersion = "2.0.0-dev"
+
+// Version returns the server version string, exposed so the command layer
+// (cmd/toykv) can stamp it onto the OpenTelemetry resource (service.version)
+// without duplicating the constant.
+func Version() string { return serverVersion }
 
 // Config holds server configuration.
 type Config struct {
@@ -37,6 +43,10 @@ type Config struct {
 	// "yes"/"on" ⇒ enabled (refuse a non-loopback bind without auth/TLS);
 	// "no"/"off" ⇒ disabled. Any other value fails New. See protected.go.
 	ProtectedMode string
+	// Telemetry carries the initialized OpenTelemetry surface (M16). nil ⇒
+	// a no-op surface is installed, so instrumentation calls are always
+	// safe and cost nothing when telemetry is disabled.
+	Telemetry *telemetry.Providers
 }
 
 // Server is the TCP listener and command dispatcher.
@@ -47,6 +57,7 @@ type Server struct {
 	aof     *aof.Writer // nil ⇒ persistence disabled
 	sweeper *store.Sweeper
 	nowFunc func() time.Time
+	tel     *telemetry.Providers // never nil after New; no-op when disabled
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -97,11 +108,15 @@ func New(cfg Config) (*Server, error) {
 	if cfg.NowFunc == nil {
 		cfg.NowFunc = time.Now
 	}
+	if cfg.Telemetry == nil {
+		cfg.Telemetry = telemetry.Disabled()
+	}
 	s := &Server{
 		cfg:       cfg,
 		log:       cfg.Log,
 		store:     cfg.Store,
 		nowFunc:   cfg.NowFunc,
+		tel:       cfg.Telemetry,
 		sweeper:   store.NewSweeper(cfg.Store, cfg.SweeperOpts),
 		startTime: cfg.NowFunc(),
 	}

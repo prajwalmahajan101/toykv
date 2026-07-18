@@ -96,6 +96,18 @@ func newDisabled(cfg Config) *Providers {
 	}
 }
 
+// Disabled returns a no-op Providers for callers that never run Init
+// (tests, embedders). Unlike the disabled path of Init it does NOT touch
+// the OTel globals, so it is safe to construct many times concurrently.
+// Tracer/Meter are non-nil no-ops so the hot path never nil-checks.
+func Disabled() *Providers {
+	return &Providers{
+		Tracer: tracenoop.NewTracerProvider().Tracer(scopeName),
+		Meter:  metricnoop.NewMeterProvider().Meter(scopeName),
+		log:    slog.Default(),
+	}
+}
+
 // Shutdown flushes and closes every registered provider/exporter, bounded
 // by ctx. Errors are joined; a shutdown error never affects correctness of
 // already-served commands. Safe to call on a disabled Providers (no-op).
