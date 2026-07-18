@@ -70,7 +70,11 @@ func TestCopy_Wire(t *testing.T) {
 
 		writeCmd(t, w, "COPY", "src", "src") // same object → error
 		expectErrContains(t, r, "same")
-		writeCmd(t, w, "COPY", "src", "dst", "DB", "1") // DB unsupported → syntax error
+		writeCmd(t, w, "COPY", "src", "cpy", "DB", "0") // single-DB: DB 0 is fine
+		expectInt(t, r, 1)
+		writeCmd(t, w, "COPY", "src", "z", "DB", "1") // other DB → out of range
+		expectErrContains(t, r, "out of range")
+		writeCmd(t, w, "COPY", "src", "z", "WAT") // unknown token → syntax error
 		expectErrContains(t, r, "syntax")
 		writeCmd(t, w, "COPY", "missing", "x") // missing source → 0
 		expectInt(t, r, 0)
