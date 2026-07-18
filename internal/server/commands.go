@@ -39,7 +39,9 @@ func (s *Server) appendIfLive(ctx context.Context, argv [][]byte) error {
 	defer span.End()
 	if err := s.aof.Append(argv); err != nil {
 		span.SetStatus(codes.Error, err.Error())
-		s.log.Error("aof append failed", "err", err, "argv0", string(argv[0]))
+		// ErrorContext so the durability-breach log carries the command's
+		// trace id, correlating the failing command trace with its log.
+		s.log.ErrorContext(ctx, "aof append failed", "err", err, "argv0", string(argv[0]))
 		return err
 	}
 	return nil

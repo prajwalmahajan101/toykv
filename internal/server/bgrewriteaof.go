@@ -52,6 +52,7 @@ func (s *Server) runRewrite() {
 	// the rewrite finishes, so it has no live command span to nest under.
 	ctx, span := s.tel.Tracer.Start(context.Background(), "aof.rewrite")
 	defer span.End()
+	s.log.InfoContext(ctx, "bgrewriteaof started")
 
 	start := time.Now()
 	r := aof.NewRewriter(s.aof, s.snapshotForRewrite)
@@ -67,8 +68,10 @@ func (s *Server) runRewrite() {
 	s.tel.Metrics.AOFRewriteDuration.Record(ctx, time.Since(start).Seconds())
 
 	if err != nil {
-		s.log.Error("aof rewrite failed", "err", err)
+		s.log.ErrorContext(ctx, "aof rewrite failed", "err", err)
+		return
 	}
+	s.log.InfoContext(ctx, "bgrewriteaof completed", "duration", time.Since(start))
 }
 
 // snapshotForRewrite bridges Store.Snapshot to the rewriter's expected
