@@ -1,0 +1,29 @@
+# Local Grafana LGTM stack for viewing toykv's OpenTelemetry signals (M16).
+#
+# The single grafana/otel-lgtm image bundles an OpenTelemetry Collector plus
+# Loki (logs), Tempo (traces), Mimir/Prometheus (metrics), and Grafana with
+# datasources pre-wired — so `docker compose up` is the whole backend.
+#
+#   docker compose -f deploy/otel-lgtm/compose.yaml up -d
+#   go run ./cmd/toykv -otel-endpoint localhost:4317
+#   # drive traffic, then open Grafana at http://localhost:3000
+#
+# See README.md in this directory for the full walkthrough.
+services:
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: toykv-lgtm
+    ports:
+      - "3000:3000" # Grafana UI (anonymous admin, local only)
+      - "4317:4317" # OTLP/gRPC  — matches -otel-protocol grpc (default)
+      - "4318:4318" # OTLP/HTTP  — matches -otel-protocol http
+    environment:
+      # Local-only convenience: no login prompt on the Grafana UI. Do NOT
+      # expose this container outside localhost.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
