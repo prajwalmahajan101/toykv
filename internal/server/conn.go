@@ -38,6 +38,7 @@ func (s *Server) handleConn(c net.Conn) {
 	r := resp.NewReader(c)
 	w := resp.NewWriter(c)
 	cs := newConnState(s.connID.Add(1), s.cfg.RequirePass == "")
+	cs.ctx = ctx // T8 replaces this with the connection-span context
 	m.ConnectionsActive.Add(ctx, 1)
 	m.ClientsByProtocol.Add(ctx, 1, protoAttr(cs.proto))
 	defer func() {

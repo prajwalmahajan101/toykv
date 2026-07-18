@@ -46,7 +46,7 @@ func protoAttr(p resp.Proto) metric.MeasurementOption {
 func (s *Server) observeCommand(cs *connState, argv [][]byte) resp.Value {
 	m := s.tel.Metrics
 	name := commandLabel(argv)
-	ctx := context.Background() // T8 threads the per-connection span context
+	ctx := cs.context() // per-connection context (span-carrying once tracing lands)
 
 	cmdAttr := attribute.String("command", name)
 	m.CommandsInflight.Add(ctx, 1, metric.WithAttributes(cmdAttr))
