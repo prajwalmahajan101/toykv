@@ -3,8 +3,6 @@ package telemetry
 import (
 	"context"
 	"testing"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 // TestInit_Disabled is the no-op-when-off contract: an empty endpoint must
@@ -35,7 +33,6 @@ func TestInit_Disabled(t *testing.T) {
 		t.Error("disabled tracer produced a sampled span")
 	}
 	span.End()
-	var _ trace.Span = span
 
 	if err := p.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown(disabled): unexpected error: %v", err)
