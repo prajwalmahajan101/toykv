@@ -10,7 +10,8 @@ DIR         ?= ./data
 BENCH_HOST  ?= 127.0.0.1
 BENCH_PORT  ?= 6390
 BENCH_N     ?= 100000
-BENCH_TESTS ?= set,get
+# v2 default exercises the typed keyspace (lists + hashes), not just strings.
+BENCH_TESTS ?= set,get,lpush,rpush,hset
 
 help:
 	@echo "Targets:"
