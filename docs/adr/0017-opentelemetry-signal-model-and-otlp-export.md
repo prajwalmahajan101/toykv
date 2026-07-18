@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-18
 - Milestone: M16
-- PR: _feat/observability_
+- PR: [#35](https://github.com/prajwalmahajan101/toykv/pull/35)
 
 ## Context
 
