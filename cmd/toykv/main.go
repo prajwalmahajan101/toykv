@@ -31,6 +31,7 @@ flags:
   -requirepass string  password clients must AUTH with ("" disables authentication)
   -tls-cert    string  path to the TLS certificate (PEM); requires -tls-key
   -tls-key     string  path to the TLS private key (PEM); requires -tls-cert
+  -protected-mode string  refuse a non-loopback bind without auth/TLS: yes|no (default "yes")
   -h, --help           show this help and exit
 `
 
@@ -44,6 +45,7 @@ func main() {
 		requirePass = flag.String("requirepass", "", "password clients must AUTH with; \"\" disables authentication")
 		tlsCert     = flag.String("tls-cert", "", "path to the TLS certificate (PEM); requires -tls-key")
 		tlsKey      = flag.String("tls-key", "", "path to the TLS private key (PEM); requires -tls-cert")
+		protected   = flag.String("protected-mode", "yes", "refuse a non-loopback bind without auth/TLS: yes|no")
 	)
 	flag.Parse()
 
@@ -66,14 +68,27 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Validate the flag value here (usage error → exit 2), distinct from
+	// the unsafe-bind refusal that server.New raises (deployment error →
+	// exit 1). Log the opt-out so a disabled safety net is never silent.
+	protectedOn, err := server.ParseProtectedMode(*protected)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if !protectedOn {
+		log.Warn("protected mode disabled via -protected-mode no; non-loopback binds will not be refused")
+	}
+
 	s, err := server.New(server.Config{
-		Addr:        *addr,
-		Log:         log,
-		Store:       store.New(),
-		Dir:         *dir,
-		FsyncPolicy: policy,
-		RequirePass: *requirePass,
-		TLS:         tlsConf,
+		Addr:          *addr,
+		Log:           log,
+		Store:         store.New(),
+		Dir:           *dir,
+		FsyncPolicy:   policy,
+		RequirePass:   *requirePass,
+		TLS:           tlsConf,
+		ProtectedMode: *protected,
 	})
 	if err != nil {
 		log.Error("server init failed", "err", err)
