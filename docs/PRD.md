@@ -115,6 +115,35 @@ TUI: `toykv-tui -addr :6390 [-refresh 500ms]`
 
 Stdlib `flag` only.
 
+### 5.8 v2.0 functional additions (M10–M17)
+
+Delivered in the v2 cycle on top of the v1 surface above; all additive except
+protected mode (the deliberate break that earns the major).
+
+- **RESP3 (M10).** `HELLO [proto [AUTH user pass]]` negotiates per-connection
+  protocol; RESP3 is opt-in and never sent to a RESP2 client. Richer reply
+  frames (map / set / double / boolean / null / verbatim) for `HELLO 3` clients.
+- **Value types (M11).** Lists (`LPUSH`/`RPUSH`/`LPOP`/`RPOP`/`LLEN`/`LRANGE`/
+  `LINDEX`) and hashes (`HSET`/`HGET`/`HDEL`/`HEXISTS`/`HKEYS`/`HVALS`/`HLEN`/
+  `HGETALL`), `TYPE`, and Redis-exact `WRONGTYPE` errors. AOF bumps to v3
+  (replays v1/v2/v3).
+- **AUTH + TLS (M12).** `-requirepass` + `AUTH`; TLS via `-tls-cert`/`-tls-key`.
+  An unauthenticated connection may run only `AUTH`, `HELLO`, `PING`.
+- **INFO + SCAN (M13).** `INFO` server introspection (Redis-faithful text);
+  `SCAN` cursor iteration over the typed keyspace.
+- **TUI v2 (M14).** Multi-type value views, `SCAN` paging, AUTH prompt,
+  `INFO`-driven status bar.
+- **Protected mode + atomic ops (M15).** The server refuses a non-loopback bind
+  without auth/TLS by default (`-protected-mode no` overrides); atomic
+  `RENAME`/`RENAMENX`/`COPY` replace the racy client-side dance.
+- **Observability (M16).** OpenTelemetry logs/metrics/traces over OTLP → the
+  Grafana LGTM stack, off unless `-otel-endpoint` is set; telemetry never fails
+  a command.
+
+The v2 config surface adds `-requirepass`, `-tls-cert`/`-tls-key`,
+`-protected-mode`, and `-otel-endpoint`/`-otel-protocol`/`-otel-service-name`/
+`-otel-sampling`/`-otel-capture-keys` to the §5.7 flags.
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |

@@ -530,6 +530,40 @@ record shape and replay deterministically. `COPY` accepts `DB 0` (single-DB;
 every real client, incl. go-redis, sends it) and rejects other indices as
 out of range (ADR-0016).
 
+### 5.7 Observability (M16)
+
+`internal/telemetry` owns the OpenTelemetry surface: `telemetry.Init` builds
+`TracerProvider`/`MeterProvider`/`LoggerProvider` from the SDK and wires the
+OTLP exporter (gRPC | HTTP) when `-otel-endpoint` is set; with no endpoint it
+installs the SDK **no-op** providers as the globals, so instrument handles and
+span-openers are created **unconditionally** — there is no `if enabled` guard
+on the hot path (ADR-0017). `observeCommand` is the RED chokepoint wrapping
+each `dispatch` with a command span, the call/error counters, the latency
+histogram, and the in-flight gauge; `connState.ctx` carries the connection
+span so store/AOF spans nest under the command.
+
+Because building an `attribute.Set` or a `metric` option allocates even
+against no-op providers, the per-command instrument attributes are **memoized
+once at construction** in a `cmdInstr` cache keyed by the bounded command label
+(dispatch verbs + `UNKNOWN`): `attribute.Set`-backed `MeasurementOption`s plus
+a spread-at-`Start` `[]SpanStartOption` for the static span attributes. This
+was added at M17 after the release-gate A/B measured a ~20% disabled-path
+regression; it restores parity without a guard, and
+`TestObserveCommand_Disabled_AllocBudget` (≤16 allocs) pins it. The telemetry
+handle threads into `store` (context-first methods) and the AOF writer for
+`store.<op>` and `aof.append`/`aof.fsync` spans; export failures are logged
+and dropped — telemetry never fails a command (ADR-0017).
+
+### 5.8 RESP frame bounds (M17 hardening)
+
+The codec caps not just bulk-string size (`MaxBulkSize`, 64 MiB) but also
+array element count (`MaxArrayLen` = 1 048 576) and array nesting depth
+(`MaxDepth` = 32). `readArray` rejects an over-count with `ErrTooLarge`
+**before** the `make([]Value, n)` allocation, and `readFrame` threads a depth
+counter so nesting past `MaxDepth` is rejected before it recurses further —
+closing a pre-auth memory-amplification OOM and a stack-exhaustion panic
+reachable before the dispatch gate (SECURITY-REVIEW-v2).
+
 ## 6. CLI (`internal/cli` + `cmd/toykv-cli`)
 
 ### 6.1 Mode dispatch

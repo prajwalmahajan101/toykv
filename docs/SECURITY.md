@@ -74,9 +74,8 @@ Public disclosure: 90 days after report, or coordinated earlier.
 - No rate limit / lockout on failed `AUTH` attempts.
 - Single password, single implicit `default` user — no ACLs.
 - `-requirepass` value appears in the process argv.
-- `KEYS *` is O(n) — abusable on large keyspaces (SCAN lands in M13).
+- `KEYS *` is O(n) — abusable on large keyspaces; use `SCAN` (shipped M13) for cursor-based iteration.
 - `INCR`/`DECR` on a 20+ digit string returns `-ERR not an integer` rather than silently truncating; tests verify.
-- TUI does not authenticate yet; the AUTH prompt lands in M14.
 
 ## Security roadmap (v2 cycle)
 
@@ -85,6 +84,7 @@ Public disclosure: 90 days after report, or coordinated earlier.
 - ~~Protected mode: refuse non-loopback bind without auth/TLS~~ — **shipped in M15** (the earned `2.0.0` break; override `-protected-mode no`).
 - ~~`RENAME`/`RENAMENX`/`COPY` for atomic keyspace edits~~ — **shipped in M15** (single store-mutex ops, TTL + type preserved).
 - ~~OpenTelemetry observability with a privacy-safe signal model~~ — **shipped in M16** (off by default; no secrets/keys in signals; opt-in salted key-hash; telemetry never fails a command).
+- ~~RESP codec pre-auth DoS bounds~~ — **shipped in M17**: the frame decoder now caps array element count (`MaxArrayLen` = 1 048 576) and nesting depth (`MaxDepth` = 32), rejecting with `ErrTooLarge` before any allocation. Closes a single-packet memory-amplification OOM and a stack-exhaustion panic reachable *before* the auth gate. Found by the **v2.0.0 release-gate security review** — the full audit (and the clean bill on the auth/TLS/protected-mode surface it was scoped to) is in [SECURITY-REVIEW-v2.md](./SECURITY-REVIEW-v2.md).
 - IP allowlist — backlog.
 - Per-client connection limit — backlog.
 - `AUTH` attempt rate-limiting / lockout — backlog.
