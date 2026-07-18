@@ -38,7 +38,7 @@ var commands = map[string]handler{
 	"DBSIZE":    {fn: cmdDBSize, minArgs: 1, maxArgs: 1},
 	"RENAME":    {fn: cmdRename, minArgs: 3, maxArgs: 3},
 	"RENAMENX":  {fn: cmdRenameNX, minArgs: 3, maxArgs: 3},
-	"COPY":      {fn: cmdCopy, minArgs: 3, maxArgs: 5},
+	"COPY":      {fn: cmdCopy, minArgs: 3, maxArgs: 6},
 	"INFO":      {fn: cmdInfo, minArgs: 1, maxArgs: 2},
 	"EXPIRE":    {fn: cmdExpire, minArgs: 3, maxArgs: 3},
 	"PEXPIRE":   {fn: cmdPExpire, minArgs: 3, maxArgs: 3},

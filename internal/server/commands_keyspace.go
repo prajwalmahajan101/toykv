@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
@@ -48,19 +49,34 @@ func cmdRenameNX(s *Server, _ *connState, argv [][]byte) resp.Value {
 	return resp.Int(1)
 }
 
-// cmdCopy implements COPY source destination [REPLACE]. Returns :1 when
-// the value is copied, :0 when the source is missing or the destination
-// exists without REPLACE. The single-DB toykv rejects Redis's DB option
-// (and any other trailing token) with a syntax error rather than silently
-// ignoring it.
+// cmdCopy implements COPY source destination [DB index] [REPLACE]. Returns
+// :1 when the value is copied, :0 when the source is missing or the
+// destination exists without REPLACE. toykv is single-DB, so DB is accepted
+// only for index 0 (which every real Redis client, incl. go-redis, sends by
+// default); any other index is out of range. An unknown token is a syntax
+// error.
 func cmdCopy(s *Server, _ *connState, argv [][]byte) resp.Value {
 	replace := false
-	for _, opt := range argv[3:] {
-		if upperASCII(opt) == "REPLACE" {
+	for i := 3; i < len(argv); {
+		switch upperASCII(argv[i]) {
+		case "REPLACE":
 			replace = true
-			continue
+			i++
+		case "DB":
+			if i+1 >= len(argv) {
+				return resp.Error("ERR syntax error")
+			}
+			db, err := strconv.Atoi(string(argv[i+1]))
+			if err != nil {
+				return resp.Error("ERR value is not an integer or out of range")
+			}
+			if db != 0 {
+				return resp.Error("ERR DB index is out of range")
+			}
+			i += 2
+		default:
+			return resp.Error("ERR syntax error")
 		}
-		return resp.Error("ERR syntax error")
 	}
 	copied, err := s.store.Copy(string(argv[1]), string(argv[2]), replace)
 	if errors.Is(err, store.ErrSameObject) {
