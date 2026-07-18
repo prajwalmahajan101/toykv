@@ -34,17 +34,63 @@ var storeSpanOps = map[string]struct{ read, hasKey bool }{
 	"HLEN": {true, true}, "HGETALL": {true, true},
 }
 
+// cmdInstr holds the per-command-label instrument attributes, precomputed
+// once at construction. Building an attribute.Set or a metric option
+// allocates regardless of whether the providers actually record, so doing it
+// per command taxes the disabled hot path too. commandLabel bounds the label
+// space to the dispatch table (~38 verbs) plus "UNKNOWN", so this cache is
+// small and cannot be inflated by a junk-verb flood. Reusing the precomputed
+// options restores benchmark parity with the pre-M16 binary while keeping
+// ADR-0017's "no if-enabled guard on the hot path" design.
+type cmdInstr struct {
+	startOpts []trace.SpanStartOption  // db.system + db.operation, spread at Start (no per-call slice alloc)
+	cmdOpt    metric.MeasurementOption // {command} — in-flight +/- and duration
+	okOpt     metric.MeasurementOption // {command, status=ok}
+	errOpt    metric.MeasurementOption // {command, status=error}
+	cmdKV     attribute.KeyValue       // command=name, for the dynamic error-kind option
+	storeSpan string                   // "store.<lower>", or "" for a non-keyspace command
+	store     struct{ read, hasKey bool }
+}
+
+// newCmdInstruments precomputes a cmdInstr for every bounded command label
+// (the dispatch-table verbs plus "UNKNOWN"). Called once from New.
+func newCmdInstruments() map[string]*cmdInstr {
+	m := make(map[string]*cmdInstr, len(commands)+1)
+	build := func(name string) {
+		cmdKV := attribute.String("command", name)
+		ci := &cmdInstr{
+			startOpts: []trace.SpanStartOption{trace.WithAttributes(
+				attribute.String("db.system", "toykv"),
+				attribute.String("db.operation", name),
+			)},
+			cmdOpt: metric.WithAttributeSet(attribute.NewSet(cmdKV)),
+			okOpt:  metric.WithAttributeSet(attribute.NewSet(cmdKV, attribute.String("status", "ok"))),
+			errOpt: metric.WithAttributeSet(attribute.NewSet(cmdKV, attribute.String("status", "error"))),
+			cmdKV:  cmdKV,
+		}
+		if op, ok := storeSpanOps[name]; ok {
+			ci.storeSpan = "store." + strings.ToLower(name)
+			ci.store = op
+		}
+		m[name] = ci
+	}
+	for name := range commands {
+		build(name)
+	}
+	build("UNKNOWN")
+	return m
+}
+
 // startStoreSpan opens a store.<op> leaf span parented to the command span
 // (so it is a sibling of any aof.append span, matching the inventory tree).
 // Returns nil for non-keyspace commands. The command context is not swapped,
 // so the span records no children — it represents the store operation.
-func (s *Server) startStoreSpan(cmdCtx context.Context, name string, argv [][]byte) trace.Span {
-	op, ok := storeSpanOps[name]
-	if !ok {
+func (s *Server) startStoreSpan(cmdCtx context.Context, ci *cmdInstr, argv [][]byte) trace.Span {
+	if ci.storeSpan == "" {
 		return nil
 	}
-	_, span := s.tel.Tracer.Start(cmdCtx, "store."+strings.ToLower(name))
-	if op.hasKey && len(argv) >= 2 && s.tel.CaptureKeys {
+	_, span := s.tel.Tracer.Start(cmdCtx, ci.storeSpan)
+	if ci.store.hasKey && len(argv) >= 2 && s.tel.CaptureKeys {
 		span.SetAttributes(attribute.String("key.hash", s.tel.HashKey(string(argv[1]))))
 	}
 	return span
@@ -52,11 +98,11 @@ func (s *Server) startStoreSpan(cmdCtx context.Context, name string, argv [][]by
 
 // finishStoreSpan sets the hit / error attributes from the reply and ends the
 // span. Safe on a nil span (non-keyspace command).
-func finishStoreSpan(span trace.Span, name string, reply resp.Value) {
+func finishStoreSpan(span trace.Span, ci *cmdInstr, reply resp.Value) {
 	if span == nil {
 		return
 	}
-	if storeSpanOps[name].read {
+	if ci.store.read {
 		switch reply.Kind {
 		case resp.KindBulkString:
 			span.SetAttributes(attribute.Bool("hit", !reply.IsNull))
@@ -104,59 +150,54 @@ func protoAttr(p resp.Proto) metric.MeasurementOption {
 // label build and a few no-op records to the hot path.
 func (s *Server) observeCommand(cs *connState, argv [][]byte) resp.Value {
 	m := s.tel.Metrics
-	name := commandLabel(argv)
+	ci := s.cmdInstr[commandLabel(argv)]
 
-	// Command span, child of the connection span on cs.ctx. Swap the command
-	// context onto cs for the dispatch so any store/aof spans nest under this
-	// command rather than directly under the connection; restore on return.
-	cmdCtx, span := s.tel.Tracer.Start(cs.context(), "command")
+	// Command span, child of the connection span on cs.ctx. The static
+	// attributes (db.system, db.operation) ride the precomputed start options;
+	// the dynamic ones are set once after dispatch. Swap the command context
+	// onto cs for the dispatch so any store/aof spans nest under this command
+	// rather than directly under the connection; restore on return.
+	cmdCtx, span := s.tel.Tracer.Start(cs.context(), "command", ci.startOpts...)
 	defer span.End()
-	span.SetAttributes(
-		attribute.String("db.system", "toykv"),
-		attribute.String("db.operation", name),
-		attribute.Int("argc", len(argv)),
-	)
 	prevCtx := cs.ctx
 	cs.ctx = cmdCtx
 	defer func() { cs.ctx = prevCtx }()
 
-	cmdAttr := attribute.String("command", name)
-	m.CommandsInflight.Add(cmdCtx, 1, metric.WithAttributes(cmdAttr))
+	m.CommandsInflight.Add(cmdCtx, 1, ci.cmdOpt)
 
 	// store.<op> span (sibling of aof.append under the command span). The
 	// command context is left on cs so aof spans nest under command, not here.
-	storeSpan := s.startStoreSpan(cmdCtx, name, argv)
+	storeSpan := s.startStoreSpan(cmdCtx, ci, argv)
 
 	// Real wall-clock latency (monotonic via time.Since); independent of the
 	// injectable TTL clock, which must not distort measured duration.
 	start := time.Now()
 	reply := s.dispatch(cs, argv)
 	elapsed := time.Since(start)
-	finishStoreSpan(storeSpan, name, reply)
+	finishStoreSpan(storeSpan, ci, reply)
 
-	m.CommandsInflight.Add(cmdCtx, -1, metric.WithAttributes(cmdAttr))
-	m.CommandDuration.Record(cmdCtx, elapsed.Seconds(), metric.WithAttributes(cmdAttr))
+	m.CommandsInflight.Add(cmdCtx, -1, ci.cmdOpt)
+	m.CommandDuration.Record(cmdCtx, elapsed.Seconds(), ci.cmdOpt)
 
-	status := "ok"
-	if reply.Kind == resp.KindError {
-		status = "error"
-		kind := errorKind(reply.Str)
-		m.CommandErrors.Add(cmdCtx, 1, metric.WithAttributes(
-			cmdAttr, attribute.String("kind", kind),
-		))
-		span.SetAttributes(attribute.String("error.kind", kind))
-		span.SetStatus(codes.Error, reply.Str)
-	}
-	m.Commands.Add(cmdCtx, 1, metric.WithAttributes(
-		cmdAttr, attribute.String("status", status),
-	))
 	// Post-dispatch attrs capture the connection's state after commands that
 	// mutate it (HELLO → proto, AUTH → authenticated).
 	span.SetAttributes(
+		attribute.Int("argc", len(argv)),
 		attribute.Int("resp.proto", int(cs.proto)),
 		attribute.Bool("authenticated", cs.authenticated),
 		attribute.String("reply.kind", replyKindName(reply.Kind)),
 	)
+	statusOpt := ci.okOpt
+	if reply.Kind == resp.KindError {
+		statusOpt = ci.errOpt
+		kind := errorKind(reply.Str)
+		m.CommandErrors.Add(cmdCtx, 1, metric.WithAttributes(
+			ci.cmdKV, attribute.String("kind", kind),
+		))
+		span.SetAttributes(attribute.String("error.kind", kind))
+		span.SetStatus(codes.Error, reply.Str)
+	}
+	m.Commands.Add(cmdCtx, 1, statusOpt)
 	return reply
 }
 

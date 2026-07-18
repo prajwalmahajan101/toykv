@@ -38,6 +38,36 @@ func BenchmarkObserveCommand_Disabled(b *testing.B) {
 	}
 }
 
+// --- M16 owned-risk test (1b): disabled-path allocation budget ---
+//
+// ADR-0017 keeps the instruments unconditional (no if-enabled guard on the
+// hot path), so the disabled path must stay allocation-light on its own —
+// per-command attribute sets and metric options are memoized in cmdInstr, not
+// rebuilt. This budget guards that: a regression that reintroduces per-command
+// attribute/option construction (the ~20% throughput loss found at M17) trips
+// here. The budget covers the whole observeCommand path (dispatch + the two
+// irreducible no-op Tracer.Start context allocations), with headroom.
+func TestObserveCommand_Disabled_AllocBudget(t *testing.T) {
+	s, err := New(Config{
+		Addr:  "127.0.0.1:0",
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store: store.New(), // no Telemetry ⇒ telemetry.Disabled()
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cs := &connState{authenticated: true}
+	argv := cmd("GET", "k")
+	s.dispatch(cs, cmd("SET", "k", "v")) // seed the key so GET hits
+	avg := testing.AllocsPerRun(500, func() { s.observeCommand(cs, argv) })
+	const budget = 16
+	if avg > budget {
+		t.Fatalf("disabled observeCommand allocs/op = %.0f, want <= %d "+
+			"(the no-guard design must stay allocation-light — did per-command "+
+			"attribute/option construction creep back onto the hot path?)", avg, budget)
+	}
+}
+
 // --- M16 owned-risk test (4): exporter-down resilience ---
 //
 // A configured-but-unreachable OTLP endpoint must never turn a successful

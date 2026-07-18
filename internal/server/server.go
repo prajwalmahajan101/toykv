@@ -61,6 +61,10 @@ type Server struct {
 	sweeper *store.Sweeper
 	nowFunc func() time.Time
 	tel     *telemetry.Providers // never nil after New; no-op when disabled
+	// cmdInstr caches per-command instrument attributes (bounded label set),
+	// so the RED chokepoint rebuilds no attribute sets or metric options per
+	// command — keeping the disabled path allocation-light. Built in New.
+	cmdInstr map[string]*cmdInstr
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -123,6 +127,7 @@ func New(cfg Config) (*Server, error) {
 		store:     cfg.Store,
 		nowFunc:   cfg.NowFunc,
 		tel:       cfg.Telemetry,
+		cmdInstr:  newCmdInstruments(),
 		sweeper:   store.NewSweeper(cfg.Store, cfg.SweeperOpts),
 		startTime: cfg.NowFunc(),
 	}
