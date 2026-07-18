@@ -12,10 +12,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prajwalmahajan101/toykv/internal/aof"
 	"github.com/prajwalmahajan101/toykv/internal/server"
 	"github.com/prajwalmahajan101/toykv/internal/store"
+	"github.com/prajwalmahajan101/toykv/internal/telemetry"
 )
 
 const usage = `toykv — in-memory key-value store server
@@ -32,6 +34,11 @@ flags:
   -tls-cert    string  path to the TLS certificate (PEM); requires -tls-key
   -tls-key     string  path to the TLS private key (PEM); requires -tls-cert
   -protected-mode string  refuse a non-loopback bind without auth/TLS: yes|no (default "yes")
+  -otel-endpoint    string  OTLP collector endpoint host:port ("" disables all telemetry)
+  -otel-protocol    string  OTLP transport: grpc|http (default "grpc")
+  -otel-service-name string service.name reported to telemetry (default "toykv")
+  -otel-sampling    float   trace sampling ratio [0,1]; errors always sampled (default 0.05)
+  -otel-capture-keys        record a salted-hash of the key on store spans (default false)
   -h, --help           show this help and exit
 `
 
@@ -46,6 +53,12 @@ func main() {
 		tlsCert     = flag.String("tls-cert", "", "path to the TLS certificate (PEM); requires -tls-key")
 		tlsKey      = flag.String("tls-key", "", "path to the TLS private key (PEM); requires -tls-cert")
 		protected   = flag.String("protected-mode", "yes", "refuse a non-loopback bind without auth/TLS: yes|no")
+
+		otelEndpoint    = flag.String("otel-endpoint", "", "OTLP collector endpoint host:port; \"\" disables telemetry")
+		otelProtocol    = flag.String("otel-protocol", "grpc", "OTLP transport: grpc|http")
+		otelService     = flag.String("otel-service-name", "toykv", "service.name reported to telemetry")
+		otelSampling    = flag.Float64("otel-sampling", 0.05, "trace sampling ratio [0,1]; errors always sampled")
+		otelCaptureKeys = flag.Bool("otel-capture-keys", false, "record a salted-hash of the key on store spans")
 	)
 	flag.Parse()
 
@@ -80,6 +93,33 @@ func main() {
 		log.Warn("protected mode disabled via -protected-mode no; non-loopback binds will not be refused")
 	}
 
+	// Telemetry is initialized before the server so its providers/globals
+	// are in place when the server registers observable-gauge callbacks.
+	// A malformed OTLP config (e.g. unknown -otel-protocol) is a usage
+	// error → exit 2; an unreachable endpoint is not — it drops silently.
+	providers, err := telemetry.Init(context.Background(), telemetry.Config{
+		Endpoint:    *otelEndpoint,
+		Protocol:    *otelProtocol,
+		ServiceName: *otelService,
+		Version:     server.Version(),
+		Sampling:    *otelSampling,
+		CaptureKeys: *otelCaptureKeys,
+		Log:         log,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	// Registered before s.Close so teardown order is: stop serving →
+	// flush+close AOF (s.Close) → flush+close telemetry exporters.
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providers.Shutdown(shutdownCtx); err != nil {
+			log.Warn("telemetry shutdown", "err", err)
+		}
+	}()
+
 	s, err := server.New(server.Config{
 		Addr:          *addr,
 		Log:           log,
@@ -89,6 +129,7 @@ func main() {
 		RequirePass:   *requirePass,
 		TLS:           tlsConf,
 		ProtectedMode: *protected,
+		Telemetry:     providers,
 	})
 	if err != nil {
 		log.Error("server init failed", "err", err)
