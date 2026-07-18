@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/subtle"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 )
 
@@ -26,14 +28,17 @@ func authenticate(s *Server, cs *connState, user, pass []byte) resp.Value {
 	if s.cfg.RequirePass == "" {
 		return resp.Error(errNoPassSet)
 	}
+	span := trace.SpanFromContext(cs.context())
 	userOK := string(user) == "default"
 	passOK := subtle.ConstantTimeCompare(pass, []byte(s.cfg.RequirePass)) == 1
 	if !userOK || !passOK {
 		s.tel.Metrics.AuthAttempts.Add(context.Background(), 1, resultAttr("wrongpass"))
+		span.AddEvent("auth.failure") // never records the password (M12 no-oracle)
 		return resp.Error(errWrongPass)
 	}
 	cs.authenticated = true
 	s.tel.Metrics.AuthAttempts.Add(context.Background(), 1, resultAttr("success"))
+	span.AddEvent("auth.success")
 	return resp.String("OK")
 }
 
