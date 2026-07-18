@@ -80,6 +80,17 @@ func (d *deque) at(i int) []byte {
 	return d.buf[(d.head+i)%len(d.buf)]
 }
 
+// clone returns a deep copy of the deque with every element byte slice
+// duplicated, so the copy is fully independent of the original. Backs
+// COPY of a list value (keyspace.go).
+func (d *deque) clone() *deque {
+	nd := &deque{}
+	for i := 0; i < d.count; i++ {
+		nd.pushBack(append([]byte(nil), d.at(i)...))
+	}
+	return nd
+}
+
 // rng returns the elements from start to stop inclusive with Redis
 // LRANGE semantics: negative indices count from the tail (-1 is the
 // last element), out-of-range indices clamp, and an empty range yields
