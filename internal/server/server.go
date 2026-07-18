@@ -12,6 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/prajwalmahajan101/toykv/internal/aof"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
@@ -232,6 +235,8 @@ func (s *Server) Run(ctx context.Context) error {
 				break
 			}
 			if isEMFILE(err) {
+				s.tel.Metrics.ConnectionsRejected.Add(ctx, 1,
+					metric.WithAttributes(attribute.String("reason", "emfile")))
 				backoff = nextBackoff(backoff)
 				s.log.Warn("accept temporarily failed (EMFILE), backing off", "delay", backoff)
 				time.Sleep(backoff)

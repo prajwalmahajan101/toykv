@@ -11,6 +11,20 @@ import (
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 )
 
+// resultAttr / protoAttr build the small bounded attribute sets shared by
+// the §1.2 connection/auth/TLS instruments, so call sites stay terse.
+func resultAttr(result string) metric.MeasurementOption {
+	return metric.WithAttributes(attribute.String("result", result))
+}
+
+func protoAttr(p resp.Proto) metric.MeasurementOption {
+	name := "resp2"
+	if p == resp.Proto3 {
+		name = "resp3"
+	}
+	return metric.WithAttributes(attribute.String("proto", name))
+}
+
 // observeCommand is the live-traffic RED chokepoint (§1.1). It wraps a
 // single dispatch with the command counter, latency histogram, error
 // counter, and in-flight gauge, then returns the reply unchanged. Startup
