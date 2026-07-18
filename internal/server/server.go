@@ -33,6 +33,10 @@ type Config struct {
 	SweeperOpts store.SweeperOptions // optional; zero ⇒ store package defaults (1s / batch 20)
 	RequirePass string               // "" ⇒ no authentication; otherwise the AUTH password
 	TLS         *tls.Config          // nil ⇒ plaintext; otherwise wraps the listener
+	// ProtectedMode gates the safe-by-default startup refusal (M15). "" or
+	// "yes"/"on" ⇒ enabled (refuse a non-loopback bind without auth/TLS);
+	// "no"/"off" ⇒ disabled. Any other value fails New. See protected.go.
+	ProtectedMode string
 }
 
 // Server is the TCP listener and command dispatcher.
@@ -81,6 +85,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Store == nil {
 		return nil, errors.New("server: Config.Store must be set")
+	}
+	// Protected-mode refusal happens before AOF replay so an unsafe bind
+	// never touches disk (and before the listener opens in Run).
+	if err := checkProtectedMode(cfg.Addr, cfg.RequirePass, cfg.TLS != nil, cfg.ProtectedMode); err != nil {
+		return nil, err
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
