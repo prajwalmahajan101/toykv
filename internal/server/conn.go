@@ -30,7 +30,7 @@ func (s *Server) handleConn(c net.Conn) {
 			_ = w.Flush()
 			return
 		}
-		reply := s.dispatch(cs, argv)
+		reply := s.observeCommand(cs, argv)
 		if err := w.WriteFrameProto(reply, cs.proto); err != nil {
 			s.log.Debug("write reply failed", "remote", remoteAddr(c), "err", err)
 			return

@@ -56,6 +56,8 @@ type Providers struct {
 	// not.
 	Tracer trace.Tracer
 	Meter  metric.Meter
+	// Metrics holds the pre-created instrument handles. Never nil.
+	Metrics *Metrics
 	// CaptureKeys mirrors Config.CaptureKeys for the store-span key helper.
 	CaptureKeys bool
 
@@ -87,10 +89,13 @@ func newDisabled(cfg Config) *Providers {
 	otel.SetTracerProvider(tracenoop.NewTracerProvider())
 	otel.SetMeterProvider(metricnoop.NewMeterProvider())
 	global.SetLoggerProvider(lognoop.NewLoggerProvider())
+	meter := otel.Meter(scopeName)
+	mx, _ := newMetrics(meter) // no-op meter never errors
 	return &Providers{
 		Enabled:     false,
 		Tracer:      otel.Tracer(scopeName),
-		Meter:       otel.Meter(scopeName),
+		Meter:       meter,
+		Metrics:     mx,
 		CaptureKeys: cfg.CaptureKeys,
 		log:         cfg.Log,
 	}
@@ -101,10 +106,13 @@ func newDisabled(cfg Config) *Providers {
 // the OTel globals, so it is safe to construct many times concurrently.
 // Tracer/Meter are non-nil no-ops so the hot path never nil-checks.
 func Disabled() *Providers {
+	meter := metricnoop.NewMeterProvider().Meter(scopeName)
+	mx, _ := newMetrics(meter) // no-op meter never errors
 	return &Providers{
-		Tracer: tracenoop.NewTracerProvider().Tracer(scopeName),
-		Meter:  metricnoop.NewMeterProvider().Meter(scopeName),
-		log:    slog.Default(),
+		Tracer:  tracenoop.NewTracerProvider().Tracer(scopeName),
+		Meter:   meter,
+		Metrics: mx,
+		log:     slog.Default(),
 	}
 }
 

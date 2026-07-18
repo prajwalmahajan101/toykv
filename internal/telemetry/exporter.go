@@ -84,6 +84,11 @@ func initEnabled(ctx context.Context, cfg Config) (*Providers, error) {
 
 	p.Tracer = otel.Tracer(scopeName)
 	p.Meter = otel.Meter(scopeName)
+	mx, err := newMetrics(p.Meter)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: build instruments: %w", err)
+	}
+	p.Metrics = mx
 	return p, nil
 }
 
