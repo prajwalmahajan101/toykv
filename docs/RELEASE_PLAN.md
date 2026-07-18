@@ -38,9 +38,56 @@ Pre-v1.0.0: every milestone gets a lightweight milestone tag `mN` (e.g. `m4` aft
 - `v1.x.0` — additive commands, TUI improvements, RESP3 negotiation (if added without breaking RESP2 clients).
 - `v2.0.0` — only if AOF format changes or wire-protocol breaks.
 
-### v2.0 and v3.0
+### v2.0.0 — exit criteria (M17 release-hardening gate)
 
-Full feature ladders live in [ROADMAP.md — v2.0](./ROADMAP.md#v20--useful-proposed-not-committed) and [v3.0](./ROADMAP.md#v30--distributed-the-tinyraft-payoff). Neither is committed; the default trajectory is **Option A (ship v1, stop)** until reviewed post-v1.
+The `2.0.0` major is **earned by M15's protected-mode break** (the server refuses a
+non-loopback bind without auth/TLS), not defaulted — RESP3 and the AOF v3 bump are additive.
+The gate below must be green with **fresh evidence run at release time**, not the roadmap's
+word (the roadmap records intended, not verified, state).
+
+Evidence captured 2026-07-18 on `feat/release-v2` (base `9904413`, `go1.26.3`, linux/amd64):
+
+1. ✅ `go vet ./...` clean; `make lint` (golangci-lint v2 config) → **0 issues**.
+2. ✅ `go test -race ./...` — full suite green (every package `ok`).
+3. ✅ Flaky-test gate: `TestAOF_CrashInjection_DuringRewrite` (incl. `late-kill`) run
+   `-race -count=3` fresh, no `-short` → green in 2.19s. Not flaky; the whole test `t.Skip`s
+   only under `-short` (subprocess fork), which is intentional, not a quarantine.
+4. ✅ Lint-config gate: `.golangci.yml` carries `version: "2"` and runs in `make lint` + `ci:`
+   (the earlier "missing schema key" gate item was already closed before M17).
+5. ✅ v1→v2→v3 AOF upgrade: `TestOpen_UpgradesOldHeaderInPlace{/v1,/v2}`,
+   `TestOpen_UpgradedFileReplaysOldAndNewRecords`, `TestReplay_AcceptsAllSupportedVersions`
+   → all PASS (`-race -count=1`). Real old-format files replay in-place under the v3 reader.
+6. ✅ Observability no-regression: the disabled path installs SDK **no-op**
+   Tracer/Meter/Logger providers (`internal/telemetry/telemetry.go`), so there is no `if
+   enabled` hot-path branch; `BenchmarkObserveCommand_Disabled` records the disabled
+   command-path cost as the parity guard. `TestExporterDown_NeverFailsCommand` (dead OTLP
+   endpoint never fails a command) and `TestDurability_WithInstrumentation` (mutate→append→
+   fsync→reply order preserved with tracing compiled in) both PASS; the `test/chaos` crash
+   matrix passes `-race` with instrumentation present.
+7. ✅ Security review of the M12 auth/TLS + M15 protected-mode surface — see
+   [`SECURITY-REVIEW-v2.md`](./SECURITY-REVIEW-v2.md); zero unwaived blocking findings.
+8. ✅ Typed bench (`set,get,lpush,rpush,hset`) re-run and recorded in
+   [`BENCHMARKS.md`](./BENCHMARKS.md).
+9. ✅ ADRs 0011–0017 present (the eight v2 topics across seven files — 0012 bundles the
+   tagged-union store model and the AOF v3 format); index budget note current.
+10. ✅ `serverVersion == "2.0.0"`; `CHANGELOG.md` `[2.0.0]` section complete incl. the M16
+    observability entry and the earned-major note.
+
+**Post-merge tag (run by the maintainer after the `feat/release-v2` PR merges to `main`):**
+
+```
+git tag -a v2.0.0 -m "toykv v2.0.0 — deployable, safe-by-default, observable single-node KV"
+git push origin v2.0.0        # triggers goreleaser → 3 binaries × 4 platforms + SHA256SUMS
+```
+
+### v2.x and v3.0
+
+The full v2 feature ladder (M10–M17) is **committed and shipping** — see
+[ROADMAP.md — v2.0](./ROADMAP.md#v20--useful-committed--the-active-plan-post-v1); the
+trajectory decision recorded 2026-07-13 is **Option B (v1 → v2)**. The v2.x backlog (RDB
+snapshots, native Prometheus scrape, `-aof-truncate`) and the [v3.0 distributed
+ladder](./ROADMAP.md#v30--distributed-the-tinyraft-payoff) remain out of committed scope; v3
+is the real downstream dependency, blocked on `ToyRaft` shipping as a vendorable library.
 
 ## Distribution
 
