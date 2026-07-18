@@ -3,6 +3,7 @@ package resp
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -77,6 +78,46 @@ func TestReader_ReadFrame_OversizedBulk(t *testing.T) {
 	_, err := r.ReadFrame()
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("got err %v, want errors.Is(_, ErrTooLarge)", err)
+	}
+}
+
+func TestReader_ReadFrame_OversizedArray(t *testing.T) {
+	// Declares more elements than MaxArrayLen; must be rejected before the
+	// make([]Value, n) allocation (pre-auth memory-amplification DoS guard).
+	input := fmt.Sprintf("*%d\r\n", MaxArrayLen+1)
+	r := NewReader(strings.NewReader(input))
+	_, err := r.ReadFrame()
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("got err %v, want errors.Is(_, ErrTooLarge)", err)
+	}
+}
+
+func TestReader_ReadFrame_OverDeepNesting(t *testing.T) {
+	// A stream of nested single-element arrays must be rejected once the
+	// nesting passes MaxDepth, instead of recursing until the goroutine
+	// stack is exhausted (pre-auth stack-exhaustion DoS guard).
+	var b strings.Builder
+	for i := 0; i < MaxDepth+2; i++ {
+		b.WriteString("*1\r\n")
+	}
+	r := NewReader(strings.NewReader(b.String()))
+	_, err := r.ReadFrame()
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("got err %v, want errors.Is(_, ErrTooLarge)", err)
+	}
+}
+
+func TestReader_ReadFrame_NestingWithinDepthOK(t *testing.T) {
+	// Nesting exactly at the limit still decodes — the bound must not
+	// reject legitimate frames. Build MaxDepth arrays wrapping one integer.
+	var b strings.Builder
+	for i := 0; i < MaxDepth-1; i++ {
+		b.WriteString("*1\r\n")
+	}
+	b.WriteString(":7\r\n")
+	r := NewReader(strings.NewReader(b.String()))
+	if _, err := r.ReadFrame(); err != nil {
+		t.Fatalf("nesting within depth should decode, got err %v", err)
 	}
 }
 

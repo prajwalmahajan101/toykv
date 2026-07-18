@@ -29,6 +29,12 @@ func NewReader(r io.Reader) *Reader {
 // stream's state is undefined and the caller should close the
 // connection.
 func (r *Reader) ReadFrame() (Value, error) {
+	return r.readFrame(0)
+}
+
+// readFrame decodes one frame, carrying the current array-nesting depth so
+// readArray can reject over-deep nesting before it recurses further.
+func (r *Reader) readFrame(depth int) (Value, error) {
 	prefix, err := r.br.ReadByte()
 	if err != nil {
 		return Value{}, err
@@ -55,7 +61,7 @@ func (r *Reader) ReadFrame() (Value, error) {
 	case KindBulkString:
 		return r.readBulk()
 	case KindArray:
-		return r.readArray()
+		return r.readArray(depth)
 	default:
 		return Value{}, fmt.Errorf("resp: unknown prefix %q: %w", prefix, ErrProtocol)
 	}
@@ -169,8 +175,12 @@ func (r *Reader) readBulk() (Value, error) {
 }
 
 // readArray reads an array frame, assuming the `*` prefix has already
-// been consumed.
-func (r *Reader) readArray() (Value, error) {
+// been consumed. depth is this array's nesting level (0 for a top-level
+// frame); elements are decoded at depth+1.
+func (r *Reader) readArray(depth int) (Value, error) {
+	if depth >= MaxDepth {
+		return Value{}, fmt.Errorf("resp: array nesting exceeds depth %d: %w", MaxDepth, ErrTooLarge)
+	}
 	n, err := r.readInt()
 	if err != nil {
 		return Value{}, err
@@ -181,9 +191,12 @@ func (r *Reader) readArray() (Value, error) {
 	if n < 0 {
 		return Value{}, fmt.Errorf("resp: negative array length %d: %w", n, ErrProtocol)
 	}
+	if n > MaxArrayLen {
+		return Value{}, fmt.Errorf("resp: array length %d > %d: %w", n, MaxArrayLen, ErrTooLarge)
+	}
 	elems := make([]Value, n)
 	for i := int64(0); i < n; i++ {
-		v, err := r.ReadFrame()
+		v, err := r.readFrame(depth + 1)
 		if err != nil {
 			return Value{}, err
 		}
