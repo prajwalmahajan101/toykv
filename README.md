@@ -155,6 +155,42 @@ Baseline numbers (NVMe + warm cache, 13th-gen i7-1355U; `valkey-benchmark -n 100
 
 On this hardware `always` came out fastest — `fdatasync` on a warm NVMe is cheaper than the per-request RESP+mutex overhead. On slower disks the conventional `no > everysec > always` ordering holds. Full methodology + how to reproduce: [`docs/BENCHMARKS.md`](./docs/BENCHMARKS.md). Why the format and policy look the way they do: [ADR-0003](./docs/adr/0003-aof-format-and-fsync-policy.md). Compaction safety story: [ADR-0005](./docs/adr/0005-bgrewriteaof-dual-write-and-tmp-cleanup.md).
 
+## Observability (OpenTelemetry → LGTM)
+
+toykv emits the three OpenTelemetry signals — **metrics**, **traces**, **logs** —
+over **OTLP**, viewable in a Grafana **LGTM** stack (Loki / Tempo / Mimir /
+Grafana). It is **off unless `-otel-endpoint` is set**: with it unset the
+providers are SDK no-ops and behaviour/benchmarks match the pre-M16 binary
+(there is no hot-path cost and no semver impact — M15's protected mode is what
+earns `2.0.0`).
+
+```sh
+# start a local all-in-one LGTM stack (single grafana/otel-lgtm image)
+docker compose -f deploy/otel-lgtm/compose.yaml up -d
+# run toykv pointed at it (grpc:4317 by default)
+toykv -otel-endpoint localhost:4317 -otel-sampling 1.0
+# drive traffic, then open Grafana at http://localhost:3000
+```
+
+- **Metrics → Mimir** — RED per command (`toykv_command_duration_seconds`,
+  `toykv_commands_total`, error counter by kind), plus `toykv_keys`,
+  `toykv_aof_size_bytes`, `toykv_connections_active`, and the
+  `toykv_aof_fsync_duration_seconds` durability signal.
+- **Traces → Tempo** — a `connection` span per client with `command` children,
+  each with `store.<op>` and (for writes) `aof.append` siblings; a slow fsync
+  shows as span latency.
+- **Logs → Loki** — structured logs; a record emitted inside a span carries its
+  `trace_id` for one-click trace↔log correlation.
+
+Flags: `-otel-endpoint`, `-otel-protocol` (`grpc`|`http`), `-otel-service-name`,
+`-otel-sampling` (default `0.05`; errors always sampled), `-otel-capture-keys`
+(records a **salted hash** of the key on store spans — never the plaintext).
+Telemetry never fails a command: a dead collector logs `otel export failed
+(dropped)` and drops the batch. Full walkthrough:
+[`deploy/otel-lgtm/README.md`](./deploy/otel-lgtm/README.md); design:
+[ADR-0017](./docs/adr/0017-opentelemetry-signal-model-and-otlp-export.md); complete
+instrument inventory: [`docs/M16-observability.md`](./docs/M16-observability.md).
+
 ## `toykv-cli` modes
 
 ```sh

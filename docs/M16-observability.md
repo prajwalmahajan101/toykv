@@ -193,6 +193,31 @@ dropped.
   endpoint logs `otel export failed (dropped)` and drops the batch; the
   command still succeeds. This is an M16 owned-risk-test assertion.
 
+## As-built deviations (M16 shipped 2026-07-18)
+
+This inventory was the design target; a few calls were made during
+implementation and are recorded here (and in [ADR-0017](./adr/0017-opentelemetry-signal-model-and-otlp-export.md)):
+
+- **`store.<op>` spans are created at the server→store boundary**, not by
+  threading `context.Context` through the store package. The store keeps its
+  ctx-free API; the emitted trace tree (`command → store.<op>`) is identical.
+  Consequently the store package is untouched by tracing and its metrics
+  (§1.3 keyspace hits/misses at the server read handlers; keys.expired /
+  sweeper counters in the store) are the store-side coverage.
+- **`aof.append` covers append+fsync as one span** — the separate `aof.fsync`
+  child (§3 tree) is **not** emitted; fsync latency is the
+  `toykv.aof.fsync.duration` metric (§1.5). The append span is a pure outer
+  wrapper, so the mutate→append→fsync→reply order is untouched.
+- **`aof.rewrite` and `aof.replay` are root spans**; `aof.snapshot` /
+  `aof.finalize` sub-spans are **not** emitted (they would need context threaded
+  into the rewriter). The "link→triggering command" on rewrite is dropped
+  (BGREWRITEAOF is async and replies before the rewrite runs).
+- **Log events**: the trace-correlated subset shipped (`aof append failed`,
+  `aof rewrite failed`, `bgrewriteaof started`/`completed`, `auth attempt`, and
+  the exporter `otel export failed (dropped)` WARN) use `…Context` logging so
+  they carry the active trace id. The remaining §2 rows (e.g. `slow fsync`,
+  per-connection open/close) remain console `slog` without OTLP-context wiring.
+
 ## Coverage check (every surface accounted for)
 
 | Surface | Metrics | Logs | Traces |

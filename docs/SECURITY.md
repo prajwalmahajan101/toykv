@@ -41,6 +41,26 @@
 - Behind a tightly-scoped private network with auth handled upstream (reverse proxy + mTLS, SSH tunnel).
 - As a `tinyraft` (future) state machine, where Raft handles the network.
 
+## Observability & telemetry (M16)
+
+OpenTelemetry is **off unless `-otel-endpoint` is set**; nothing leaves the
+process by default. When enabled:
+
+- **No secrets in signals.** Passwords never appear in any log, span, or metric
+  — the `auth attempt` log records only `result`, mirroring the M12 no-oracle
+  rule. Key **names and values never appear in metric labels** (they would be
+  unbounded user data); the only labels are a fixed low-cardinality set
+  (`command`, `status`, `kind`, `policy`, `result`, `proto`).
+- **Key capture is opt-in and hashed.** With `-otel-capture-keys` off (default)
+  store spans record no key; on, they record a **salted SHA-256** truncated hex,
+  never the plaintext key or value.
+- **Telemetry never fails a command.** A dead OTLP collector logs `otel export
+  failed (dropped)` and drops the batch — the command still succeeds. Export is
+  async; a slow/unreachable endpoint cannot stall or error a client request.
+- **The local stack is local-only.** `deploy/otel-lgtm/` runs Grafana with
+  anonymous admin and open OTLP ports for convenience — never expose that
+  container beyond localhost.
+
 ## Reporting vulnerabilities
 
 Open a **private** GitHub Security Advisory on this repo. Expect a response within 7 days.
@@ -64,6 +84,7 @@ Public disclosure: 90 days after report, or coordinated earlier.
 - ~~AUTH command (RESP-compatible)~~ — **shipped in M12**.
 - ~~Protected mode: refuse non-loopback bind without auth/TLS~~ — **shipped in M15** (the earned `2.0.0` break; override `-protected-mode no`).
 - ~~`RENAME`/`RENAMENX`/`COPY` for atomic keyspace edits~~ — **shipped in M15** (single store-mutex ops, TTL + type preserved).
+- ~~OpenTelemetry observability with a privacy-safe signal model~~ — **shipped in M16** (off by default; no secrets/keys in signals; opt-in salted key-hash; telemetry never fails a command).
 - IP allowlist — backlog.
 - Per-client connection limit — backlog.
 - `AUTH` attempt rate-limiting / lockout — backlog.
