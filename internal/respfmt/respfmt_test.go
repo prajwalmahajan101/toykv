@@ -2,6 +2,7 @@ package respfmt
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 
@@ -37,6 +38,36 @@ func TestPrinter_Pretty(t *testing.T) {
 			"1) \"a\"\n2) \n   1) \"b1\"\n   2) \"b2\"\n",
 			"",
 		},
+		// RESP3 kinds — rendered when the connection negotiated HELLO 3.
+		{
+			"map",
+			resp.Map(
+				resp.Bulk([]byte("f1")), resp.Bulk([]byte("v1")),
+				resp.Bulk([]byte("f2")), resp.Int(2),
+			),
+			"1# \"f1\" => \"v1\"\n2# \"f2\" => (integer) 2\n",
+			"",
+		},
+		{"empty-map", resp.Map(), "(empty map)\n", ""},
+		{
+			"map-with-null-value",
+			resp.Map(resp.Bulk([]byte("k")), resp.Null()),
+			"1# \"k\" => (nil)\n",
+			"",
+		},
+		{"set", resp.Set(resp.Int(1), resp.Int(2)), "1) (integer) 1\n2) (integer) 2\n", ""},
+		{
+			"push",
+			resp.Push(resp.Bulk([]byte("message")), resp.Bulk([]byte("ch"))),
+			"1) \"message\"\n2) \"ch\"\n",
+			"",
+		},
+		{"double", resp.Double(3.5), "(double) 3.5\n", ""},
+		{"double-inf", resp.Double(math.Inf(1)), "(double) inf\n", ""},
+		{"bool-true", resp.Boolean(true), "(true)\n", ""},
+		{"bool-false", resp.Boolean(false), "(false)\n", ""},
+		{"null", resp.Null(), "(nil)\n", ""},
+		{"verbatim", resp.Verbatim("txt", []byte("line1\nline2")), "line1\nline2\n", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -75,6 +106,35 @@ func TestPrinter_Raw(t *testing.T) {
 	p.Print(resp.Error("ERR x"))
 	if !strings.HasPrefix(errb.String(), "(error)") {
 		t.Errorf("raw error still goes to stderr; got %q", errb.String())
+	}
+}
+
+func TestPrinter_Raw_RESP3(t *testing.T) {
+	cases := []struct {
+		name string
+		v    resp.Value
+		out  string
+	}{
+		// A raw map flattens to one element per line (script-friendly).
+		{
+			"map",
+			resp.Map(resp.Bulk([]byte("f")), resp.Bulk([]byte("v"))),
+			"f\nv\n",
+		},
+		{"double", resp.Double(2.5), "2.5\n"},
+		{"bool-true", resp.Boolean(true), "true\n"},
+		{"null", resp.Null(), "\n"},
+		{"verbatim", resp.Verbatim("txt", []byte("body")), "body\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			p := &Printer{Out: &out, Err: &errb, Raw: true}
+			p.Print(c.v)
+			if out.String() != c.out {
+				t.Errorf("raw %s: got %q want %q", c.name, out.String(), c.out)
+			}
+		})
 	}
 }
 
