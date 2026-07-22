@@ -88,7 +88,10 @@ func (s *Server) runRewrite() {
 func (s *Server) snapshotForRewrite() []aof.SnapshotCmd {
 	entries := s.store.Snapshot()
 	out := make([]aof.SnapshotCmd, 0, len(entries))
-	for _, e := range entries {
+	// Index rather than range-copy: SnapshotEntry is large enough that a
+	// value copy per iteration trips gocritic's rangeValCopy.
+	for i := range entries {
+		e := &entries[i]
 		switch e.Type {
 		case "list":
 			argv := make([][]byte, 0, 2+len(e.List))
@@ -98,8 +101,10 @@ func (s *Server) snapshotForRewrite() []aof.SnapshotCmd {
 		case "hash":
 			argv := make([][]byte, 0, 2+2*len(e.Hash))
 			argv = append(argv, []byte("HSET"), []byte(e.Key))
-			for f, v := range e.Hash {
-				argv = append(argv, []byte(f), v)
+			// Emit fields in insertion order so a reloaded AOF replays into
+			// the same HKEYS/HVALS correspondence the live hash had.
+			for _, f := range e.HashOrder {
+				argv = append(argv, []byte(f), e.Hash[f])
 			}
 			out = append(out, aof.SnapshotCmd{Argv: argv})
 		default: // "string"

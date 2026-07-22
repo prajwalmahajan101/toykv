@@ -34,11 +34,18 @@ func (t valueType) String() string {
 // expired. The zero value means "no expiry". TTL state is uniform
 // across all value types (EXPIRE / PERSIST / TTL are type-agnostic).
 type entry struct {
-	typ      valueType
-	str      []byte            // typeString
-	list     *deque            // typeList
-	hash     map[string][]byte // typeHash
-	expireAt time.Time
+	typ  valueType
+	str  []byte            // typeString
+	list *deque            // typeList
+	hash map[string][]byte // typeHash
+	// fieldOrder records hash field names in insertion order (typeHash
+	// only). HKeys/HVals/HGetAll iterate it instead of ranging the map so
+	// their results correspond pairwise and stay stable across calls —
+	// matching Redis's HKEYS[i]↔HVALS[i] guarantee. A field is appended when
+	// first created (HSet) and removed on HDel; re-adding a deleted field
+	// appends it at the end, as Redis does.
+	fieldOrder []string
+	expireAt   time.Time
 	// seq is the monotonic creation sequence stamped when the key is
 	// first created (absent→present). It is preserved across updates so a
 	// key keeps a stable position for SCAN's whole lifetime; SCAN's cursor

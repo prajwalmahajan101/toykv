@@ -121,8 +121,12 @@ torn-write window. (The append fd is `O_APPEND`, where Go rejects
   huge collection produces one huge RESP array. Bounded in practice by
   the 64 MiB frame cap; chunking (Redis-style 128-element records) is
   deferred until a real workload hits it.
-- `HKEYS`/`HVALS`/`HGETALL` order is map-iteration order — unspecified,
-  as in Redis. The compat sweep pins bytes using single-field hashes.
+- `HKEYS`/`HVALS`/`HGETALL` originally iterated the Go map independently,
+  leaving order unspecified. **Corrected post-v2.0.0** (`fix/resp3-reader-hash-order`):
+  the entry now tracks field insertion order in a `fieldOrder []string`
+  slice, so `HKEYS[i]↔HVALS[i]↔HGETALL` correspond as Redis guarantees, and
+  the order survives AOF replay and BGREWRITEAOF. The compat sweep still
+  pins RESP2↔RESP3 divergence bytes using single-field hashes.
 - `Get` grew a third return (`value, ok, err`) to carry `WRONGTYPE`,
   churning every call site once. The alternative — a separate
   `GetChecked` — would have left two get paths to keep honest.

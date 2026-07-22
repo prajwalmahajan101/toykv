@@ -205,6 +205,7 @@ func (s *Store) HSet(k string, pairs ...[]byte) (int, error) {
 		f := string(pairs[i])
 		if _, exists := e.hash[f]; !exists {
 			created++
+			e.fieldOrder = append(e.fieldOrder, f)
 		}
 		e.hash[f] = append([]byte(nil), pairs[i+1]...)
 	}
@@ -245,6 +246,7 @@ func (s *Store) HDel(k string, fields ...string) (int, error) {
 	for _, f := range fields {
 		if _, exists := e.hash[f]; exists {
 			delete(e.hash, f)
+			e.fieldOrder = removeField(e.fieldOrder, f)
 			n++
 		}
 	}
@@ -271,8 +273,10 @@ func (s *Store) HExists(k, f string) (bool, error) {
 	return ok, nil
 }
 
-// HKeys returns the field names of the hash at k. Order is unspecified
-// (map iteration). A missing key yields an empty slice.
+// HKeys returns the field names of the hash at k in insertion order. The
+// order corresponds element-for-element with HVals and HGetAll on an
+// unchanged hash (Redis's HKEYS[i]↔HVALS[i] guarantee). A missing key
+// yields an empty slice.
 func (s *Store) HKeys(k string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -283,15 +287,14 @@ func (s *Store) HKeys(k string) ([]string, error) {
 	if e.typ != typeHash {
 		return nil, ErrWrongType
 	}
-	out := make([]string, 0, len(e.hash))
-	for f := range e.hash {
-		out = append(out, f)
-	}
+	out := make([]string, len(e.fieldOrder))
+	copy(out, e.fieldOrder)
 	return out, nil
 }
 
-// HVals returns the values of the hash at k. Order is unspecified. The
-// returned slices are owned by the store.
+// HVals returns the values of the hash at k in insertion order,
+// corresponding element-for-element with HKeys. The returned slices are
+// owned by the store.
 func (s *Store) HVals(k string) ([][]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -302,9 +305,9 @@ func (s *Store) HVals(k string) ([][]byte, error) {
 	if e.typ != typeHash {
 		return nil, ErrWrongType
 	}
-	out := make([][]byte, 0, len(e.hash))
-	for _, v := range e.hash {
-		out = append(out, v)
+	out := make([][]byte, 0, len(e.fieldOrder))
+	for _, f := range e.fieldOrder {
+		out = append(out, e.hash[f])
 	}
 	return out, nil
 }
@@ -324,9 +327,10 @@ func (s *Store) HLen(k string) (int, error) {
 }
 
 // HGetAll returns every field/value pair of the hash at k as a flat
-// [f1, v1, f2, v2, ...] slice (the shape RESP map replies want). Order
-// is unspecified. A missing key yields an empty slice. The value
-// slices are owned by the store.
+// [f1, v1, f2, v2, ...] slice (the shape RESP map replies want) in
+// insertion order — the field sequence matches HKeys and each value
+// matches HVals. A missing key yields an empty slice. The value slices
+// are owned by the store.
 func (s *Store) HGetAll(k string) ([][]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -337,9 +341,22 @@ func (s *Store) HGetAll(k string) ([][]byte, error) {
 	if e.typ != typeHash {
 		return nil, ErrWrongType
 	}
-	out := make([][]byte, 0, len(e.hash)*2)
-	for f, v := range e.hash {
-		out = append(out, []byte(f), v)
+	out := make([][]byte, 0, len(e.fieldOrder)*2)
+	for _, f := range e.fieldOrder {
+		out = append(out, []byte(f), e.hash[f])
 	}
 	return out, nil
+}
+
+// removeField returns order with the first occurrence of f removed,
+// preserving the relative order of the remaining fields. It mutates and
+// returns the same backing array when possible; callers store the result
+// back on the entry.
+func removeField(order []string, f string) []string {
+	for i, name := range order {
+		if name == f {
+			return append(order[:i], order[i+1:]...)
+		}
+	}
+	return order
 }
