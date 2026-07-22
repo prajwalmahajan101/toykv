@@ -23,8 +23,10 @@ make build                 # → bin/toykv, bin/toykv-cli, bin/toykv-tui
 ```
 
 Optional external tooling (only for the compat and bench scenarios):
-- `redis-cli` / `valkey-cli` — byte-compat sweep (§5). Not required.
-- Docker — the LGTM observability stack (§10) and `valkey-benchmark` (§11).
+- `redis-cli` / `valkey-cli` — byte-compat sweep (§5). Not required: `make compat` runs the
+  sweep from Docker with no local install (§5).
+- Docker — the redis-cli compat sweep (§5, `make compat`), the LGTM observability stack (§10),
+  and `valkey-benchmark` (§11).
 
 ---
 
@@ -323,20 +325,41 @@ and `test/e2e` `TestRESP3_HashMapAndOrder`.)
 
 ## 5. Redis-client compatibility
 
-```bash
-# redis-cli / valkey-cli (skip if not installed):
-redis-cli -p 6390 PING
-redis-cli -p 6390 SET k v
-redis-cli -p 6390 -a s3cret GET k         # against a -requirepass server
-redis-cli --tls --cacert cert.pem -p 6390 PING   # against a TLS server (§9.2)
+The byte-compat sweep needs a real `redis-cli`. If you don't have one installed, run it
+straight from Docker — no local install, same Valkey image the benchmarks use (§11):
 
-# go-redis/v9 is exercised end-to-end by the subprocess suite:
+```bash
+# One command: run the whole redis-cli byte-compat sweep (TestRedisCLI_ByteCompat)
+# against a fresh subprocess server, sourcing redis-cli from Docker.
+make compat            # verifies Docker, pulls valkey/valkey:8-alpine, runs the sweep
+make compat-prep       # just verify Docker + pre-pull the image
+
+# The Docker-backed shim behaves like a normal redis-cli — put scripts/ on PATH,
+# or call it directly against a running server:
+./scripts/redis-cli -p 6390 PING
+./scripts/redis-cli -p 6390 SET k v
+./scripts/redis-cli -3 -p 6390 HGETALL h          # force RESP3 for the session
+TOYKV_COMPAT_IMAGE=redis:7-alpine ./scripts/redis-cli -p 6390 PING   # override image
+
+# Or the raw one-liner (Linux host networking reaches the loopback server):
+docker run --rm --network host valkey/valkey:8-alpine redis-cli -p 6390 PING
+```
+
+If you *do* have `redis-cli`/`valkey-cli` natively, the same commands work without Docker:
+
+```bash
+redis-cli -p 6390 PING
+redis-cli -p 6390 -a s3cret GET k                 # against a -requirepass server
+redis-cli --tls --cacert cert.pem -p 6390 PING    # against a TLS server (§9.2)
+
+# go-redis/v9 is exercised end-to-end by the subprocess suite regardless:
 go test -race ./test/e2e
 ```
 
 **Expected:** every command in the matrix (§3.1) round-trips byte-compatibly; the e2e suite
-drives the shipped binary via `go-redis/v9`, `toykv-cli`, and a `redis-cli` sweep (the sweep
-auto-skips when `redis-cli` is off `PATH`).
+drives the shipped binary via `go-redis/v9`, `toykv-cli`, and a `redis-cli` sweep. The sweep
+auto-skips only when no `redis-cli` is on `PATH` — `make compat` supplies one via Docker, so it
+runs everywhere Docker does.
 
 ---
 
