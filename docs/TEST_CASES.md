@@ -217,10 +217,10 @@ HSET h f1 v1 f2 v2        # (integer) 2   (fields newly added)
 HGET h f1                 # "v1"
 HGET h missing            # (nil)
 HEXISTS h f1              # (integer) 1
-HKEYS h                   # f1, f2
-HVALS h                   # v1, v2
+HKEYS h                   # f1, f2        (insertion order)
+HVALS h                   # v1, v2        (HVALS[i] pairs with HKEYS[i])
 HLEN h                    # (integer) 2
-HGETALL h                 # RESP3: %map ; RESP2: flat array f1 v1 f2 v2
+HGETALL h                 # RESP3: %map ; RESP2: flat array f1 v1 f2 v2 (insertion order)
 HDEL h f1                 # (integer) 1
 TYPE h                    # hash
 ```
@@ -248,15 +248,76 @@ BGREWRITEAOF              # OK (async compaction; see §8)
 # RESP2 (default) — HGETALL is a flat array, nulls are $-1:
 printf 'HSET h a 1 b 2\nHGETALL h\n' | ./bin/toykv-cli
 
-# RESP3 — upgrade the connection first; HGETALL is a native map, misses are _:
+# RESP3 — upgrade the connection first; HGETALL is a native map, misses are _.
+# toykv-cli's own reader decodes the RESP3 frames, so this Just Works:
 printf 'HELLO 3\nHSET h a 1 b 2\nHGETALL h\nGET missing\n' | ./bin/toykv-cli
 
-# With redis-cli, force RESP3 for a session:
+# With redis-cli, force RESP3 for a whole session (an alternative client):
 redis-cli -3 -p 6390 HGETALL h
 ```
 
 **Expected:** a RESP2 client's replies are byte-identical to v1; a `HELLO 3` client gets the
-richer frames (`%` map, `_` null, `=` verbatim `INFO`). RESP2 and RESP3 clients coexist.
+richer frames (`%` map, `_` null, `=` verbatim `INFO`) and `toykv-cli`/`toykv-tui` decode
+them without error. RESP2 and RESP3 clients coexist.
+
+> **Regression note:** through v2.0.0 the `internal/resp` codec was asymmetric — the writer
+> encoded every RESP3 kind but the reader (used by `internal/client`) decoded only RESP2, so
+> `HELLO 3` under `toykv-cli` failed with `resp: unknown prefix '%'`. Fixed in
+> `fix/resp3-reader-hash-order` by making the reader decode `% ~ , # _ = >`, locked by an
+> encode→decode round-trip test. If you see `unknown prefix`, you're on an old build.
+
+### 4.1 RESP3 kinds, decoded by the shipped client
+
+```bash
+# Each line exercises a distinct RESP3 frame the client must now decode:
+printf 'HELLO 3\n'                                | ./bin/toykv-cli   # % map (handshake)
+printf 'HELLO 3\nHSET h a 1 b 2 c 3\nHGETALL h\n' | ./bin/toykv-cli   # % map (fields+values)
+printf 'HELLO 3\nGET missing\n'                   | ./bin/toykv-cli   # _ null
+printf 'HELLO 3\nSET k v NX\nSET k v NX\n'        | ./bin/toykv-cli   # _ null on the 2nd (NX fails)
+printf 'HELLO 3\nINFO server\n'                   | ./bin/toykv-cli   # = verbatim string
+```
+
+**Expected:** no `resp: unknown prefix …` error on any RESP3 reply; the CLI renders the map,
+the null, and the verbatim `INFO` block. Cross-check with `redis-cli -3 -p 6390 <cmd>` — the
+two clients must agree.
+
+### 4.2 Hash field ordering (`HKEYS[i]` ↔ `HVALS[i]` ↔ `HGETALL`)
+
+Redis guarantees that within an unchanged hash the *i*-th `HKEYS` field pairs with the *i*-th
+`HVALS` value, and `HGETALL` lists the same field/value pairs in the same order. toykv now
+matches this by tracking field **insertion order** (not Go map-iteration order).
+
+```bash
+# Insert in a deliberately non-alphabetical order:
+printf 'DEL h\nHSET h zeta 1 alpha 2 mike 3 bravo 4\nHKEYS h\nHVALS h\nHGETALL h\n' \
+  | ./bin/toykv-cli
+# HKEYS  → zeta alpha mike bravo
+# HVALS  → 1 2 3 4                (position-for-position with HKEYS)
+# HGETALL→ zeta 1 alpha 2 mike 3 bravo 4
+
+# Updating an existing field does NOT move it; a deleted+re-added field goes last:
+printf 'HSET h alpha 22\nHKEYS h\n'          | ./bin/toykv-cli   # order unchanged
+printf 'HDEL h mike\nHSET h mike 3\nHKEYS h\n'| ./bin/toykv-cli   # ...zeta alpha bravo mike
+```
+
+**Expected:** `HKEYS`/`HVALS`/`HGETALL` agree on order across repeated calls; overwriting a
+field keeps its slot; deleting then re-adding appends the field at the end.
+
+#### 4.2.1 Ordering survives persistence
+
+```bash
+# Insertion order must be rebuilt identically after an AOF-backed restart and a rewrite.
+# Persistence is on whenever -dir is set (non-empty).
+./bin/toykv -addr 127.0.0.1:6390 -dir /tmp/toykv-order &
+printf 'HSET h zeta 1 alpha 2 mike 3 bravo 4\n' | ./bin/toykv-cli
+./bin/toykv-cli BGREWRITEAOF
+# ...stop the server, restart it on the same -dir, then:
+./bin/toykv-cli HKEYS h            # still: zeta alpha mike bravo
+```
+
+**Expected:** after both a plain AOF replay and a `BGREWRITEAOF` snapshot reload, `HKEYS`
+returns the original insertion order. (Automated by `internal/server` `TestHashFieldOrder_*`
+and `test/e2e` `TestRESP3_HashMapAndOrder`.)
 
 ---
 
@@ -454,7 +515,7 @@ make tui ADDR=127.0.0.1:6390
 | `r` | Refresh (re-fetch keys + focused value) |
 | `]` / `PgDn` | Next `SCAN` page |
 | `[` / `PgUp` | Previous `SCAN` page |
-| `/` | Filter keys by glob (`SCAN … MATCH`) |
+| `/` | Filter keys by glob (`SCAN … MATCH`); pre-fills the current filter — `Ctrl-U` clears it |
 | `n` | New key: `SET key value` prompt |
 | `e` | Edit the focused key's value |
 | `t` | Set a TTL on the focused key (`EXPIRE key seconds`) |
@@ -477,6 +538,8 @@ make tui ADDR=127.0.0.1:6390
 6. **TTL** — focus a key, `t`, type `30`, `enter`; the status/value reflects the expiry.
 7. **Delete** — focus a key, `d`, confirm `y`; it disappears. `n`/`esc` cancels.
 8. **Filter** — `/`, type `user:*`, `enter` → only matching keys listed. Clear with `/` + empty.
+   Note: `/` **pre-fills the current filter** (so you can tweak it); press `Ctrl-U` to wipe the
+   line and type a fresh glob from scratch.
 9. **Paging** — seed 100+ keys (§6), then `]`/`[` to walk `SCAN` pages; the status bar shows
    the page position.
 10. **Raw command** — `:`, type `HSET cfg retries 5`, `enter`; then focus `cfg` to see it.
