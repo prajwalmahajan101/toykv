@@ -15,8 +15,9 @@ const (
 // RESP3 frame prefixes (M10). These are emitted natively only to a
 // connection that negotiated proto 3 via HELLO; on proto 2 the writer
 // downgrades each to its RESP2 equivalent (see writer.go). Clients still
-// send commands as RESP2 arrays regardless of negotiated protocol, so the
-// reader never produces these kinds.
+// send commands as RESP2 arrays regardless of negotiated protocol, but a
+// proto-3 client reads these kinds back in replies — the Reader decodes
+// them symmetrically with the Writer (see reader.go).
 const (
 	KindMap      Kind = '%' // Array holds flat [k1,v1,k2,v2,…]
 	KindSet      Kind = '~' // Array holds elements

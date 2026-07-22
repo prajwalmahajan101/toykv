@@ -9,8 +9,11 @@ import (
 
 const readerBufSize = 16 << 10 // 16 KiB
 
-// Reader decodes RESP2 frames from an io.Reader. It wraps the input in
-// a buffered reader sized for typical command traffic; bulk strings
+// Reader decodes RESP frames from an io.Reader. It handles both the
+// RESP2 kinds (+ - : $ *) and, symmetrically with the Writer, the RESP3
+// kinds (% ~ , # _ = >) — so a client that negotiated proto 3 via HELLO
+// can consume the server's richer replies (ADR-0011). It wraps the input
+// in a buffered reader sized for typical command traffic; bulk strings
 // larger than the buffer are streamed directly into a fresh slice.
 //
 // Reader is not safe for concurrent use.
@@ -62,6 +65,20 @@ func (r *Reader) readFrame(depth int) (Value, error) {
 		return r.readBulk()
 	case KindArray:
 		return r.readArray(depth)
+	case KindMap:
+		return r.readMap(depth)
+	case KindSet:
+		return r.readSetLike(KindSet, depth)
+	case KindPush:
+		return r.readSetLike(KindPush, depth)
+	case KindDouble:
+		return r.readDouble()
+	case KindBoolean:
+		return r.readBoolean()
+	case KindNull:
+		return r.readNull()
+	case KindVerbatim:
+		return r.readVerbatim()
 	default:
 		return Value{}, fmt.Errorf("resp: unknown prefix %q: %w", prefix, ErrProtocol)
 	}
@@ -188,19 +205,160 @@ func (r *Reader) readArray(depth int) (Value, error) {
 	if n == -1 {
 		return NullArray(), nil
 	}
-	if n < 0 {
-		return Value{}, fmt.Errorf("resp: negative array length %d: %w", n, ErrProtocol)
+	elems, err := r.readElements(depth, n)
+	if err != nil {
+		return Value{}, err
 	}
-	if n > MaxArrayLen {
-		return Value{}, fmt.Errorf("resp: array length %d > %d: %w", n, MaxArrayLen, ErrTooLarge)
+	return Array(elems...), nil
+}
+
+// readElements decodes count child frames at depth+1, applying the same
+// length and nesting bounds that guard readArray. It is the shared body
+// for every aggregate kind (array, set, push, map); count is the total
+// number of element frames to read (for maps: 2×pairs). A negative count
+// (other than the -1 nil form the callers handle) is a grammar violation.
+func (r *Reader) readElements(depth int, count int64) ([]Value, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("resp: negative aggregate length %d: %w", count, ErrProtocol)
 	}
-	elems := make([]Value, n)
-	for i := int64(0); i < n; i++ {
+	if count > MaxArrayLen {
+		return nil, fmt.Errorf("resp: aggregate length %d > %d: %w", count, MaxArrayLen, ErrTooLarge)
+	}
+	elems := make([]Value, count)
+	for i := int64(0); i < count; i++ {
 		v, err := r.readFrame(depth + 1)
 		if err != nil {
-			return Value{}, err
+			return nil, err
 		}
 		elems[i] = v
 	}
-	return Array(elems...), nil
+	return elems, nil
+}
+
+// readSetLike decodes a RESP3 set (`~`) or push (`>`) frame, assuming the
+// prefix has already been consumed. Both share the array grammar; only
+// the resulting Kind differs.
+func (r *Reader) readSetLike(kind Kind, depth int) (Value, error) {
+	if depth >= MaxDepth {
+		return Value{}, fmt.Errorf("resp: aggregate nesting exceeds depth %d: %w", MaxDepth, ErrTooLarge)
+	}
+	n, err := r.readInt()
+	if err != nil {
+		return Value{}, err
+	}
+	elems, err := r.readElements(depth, n)
+	if err != nil {
+		return Value{}, err
+	}
+	return Value{Kind: kind, Array: elems}, nil
+}
+
+// readMap decodes a RESP3 map (`%`) frame, assuming the `%` prefix has
+// already been consumed. The header counts key/value PAIRS; the decoded
+// Value holds the flat [k1,v1,…] element sequence the Writer emits.
+func (r *Reader) readMap(depth int) (Value, error) {
+	if depth >= MaxDepth {
+		return Value{}, fmt.Errorf("resp: map nesting exceeds depth %d: %w", MaxDepth, ErrTooLarge)
+	}
+	pairs, err := r.readInt()
+	if err != nil {
+		return Value{}, err
+	}
+	if pairs < 0 {
+		return Value{}, fmt.Errorf("resp: negative map length %d: %w", pairs, ErrProtocol)
+	}
+	// Guard the pair count before doubling so a huge header can't overflow.
+	if pairs > MaxArrayLen/2 {
+		return Value{}, fmt.Errorf("resp: map length %d > %d pairs: %w", pairs, MaxArrayLen/2, ErrTooLarge)
+	}
+	elems, err := r.readElements(depth, pairs*2)
+	if err != nil {
+		return Value{}, err
+	}
+	return Value{Kind: KindMap, Array: elems}, nil
+}
+
+// readDouble decodes a RESP3 double (`,`) frame. The body reuses Redis's
+// textual forms — inf / -inf / nan and the shortest round-trippable
+// decimal — all of which strconv.ParseFloat accepts.
+func (r *Reader) readDouble() (Value, error) {
+	s, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	f, perr := strconv.ParseFloat(s, 64)
+	if perr != nil {
+		return Value{}, fmt.Errorf("resp: bad double %q: %w", s, ErrProtocol)
+	}
+	return Double(f), nil
+}
+
+// readBoolean decodes a RESP3 boolean (`#`) frame: `#t` ⇒ true, `#f` ⇒
+// false. Any other body is a grammar violation.
+func (r *Reader) readBoolean() (Value, error) {
+	s, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	switch s {
+	case "t":
+		return Boolean(true), nil
+	case "f":
+		return Boolean(false), nil
+	default:
+		return Value{}, fmt.Errorf("resp: bad boolean %q: %w", s, ErrProtocol)
+	}
+}
+
+// readNull decodes a RESP3 null (`_`) frame — an empty line after the
+// prefix. A non-empty body is a grammar violation.
+func (r *Reader) readNull() (Value, error) {
+	s, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	if s != "" {
+		return Value{}, fmt.Errorf("resp: null frame carries body %q: %w", s, ErrProtocol)
+	}
+	return Null(), nil
+}
+
+// readVerbatim decodes a RESP3 verbatim string (`=`) frame, mirroring the
+// Writer: the declared length covers the 3-char format tag, the ':'
+// separator, and the body (=<total>\r\n<fmt>:<body>\r\n). It reuses the
+// bulk length bound.
+func (r *Reader) readVerbatim() (Value, error) {
+	n, err := r.readInt()
+	if err != nil {
+		return Value{}, err
+	}
+	if n < 4 {
+		return Value{}, fmt.Errorf("resp: verbatim length %d < 4: %w", n, ErrProtocol)
+	}
+	if n > MaxBulkSize {
+		return Value{}, fmt.Errorf("resp: verbatim length %d > %d: %w", n, MaxBulkSize, ErrTooLarge)
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r.br, buf); err != nil {
+		if err == io.ErrUnexpectedEOF {
+			return Value{}, fmt.Errorf("resp: short verbatim body: %w", ErrProtocol)
+		}
+		return Value{}, err
+	}
+	if buf[3] != ':' {
+		return Value{}, fmt.Errorf("resp: verbatim missing ':' separator: %w", ErrProtocol)
+	}
+	// Trailing CRLF.
+	cr, err := r.br.ReadByte()
+	if err != nil {
+		return Value{}, err
+	}
+	lf, err := r.br.ReadByte()
+	if err != nil {
+		return Value{}, err
+	}
+	if cr != '\r' || lf != '\n' {
+		return Value{}, fmt.Errorf("resp: verbatim missing CRLF tail: %w", ErrProtocol)
+	}
+	return Verbatim(string(buf[:3]), buf[4:]), nil
 }
