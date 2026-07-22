@@ -60,3 +60,65 @@ func TestRESP3_GoRedisRoundTrip(t *testing.T) {
 		t.Fatalf("DEL: %v", err)
 	}
 }
+
+// TestRESP3_HashMapAndOrder drives HSET/HKEYS/HVALS/HGETALL under RESP3
+// against the shipped binary. It is the end-to-end gate for two fixes at
+// once: the server's `%` map reply must decode (go-redis fails hard on an
+// unknown prefix, same as toykv-cli did), and HKEYS[i]↔HVALS[i]↔HGETALL
+// must correspond in a stable insertion order.
+func TestRESP3_HashMapAndOrder(t *testing.T) {
+	s := StartServer(t, ServerOpts{})
+	c := newRESP3Client(s.Addr)
+	defer func() { _ = c.Close() }()
+	ctx := context.Background()
+
+	// Insert in a deliberately non-alphabetical order so a map-iteration
+	// bug would show up as a reordering.
+	fields := []string{"zeta", "alpha", "mike", "bravo"}
+	vals := []string{"1", "2", "3", "4"}
+	args := make([]any, 0, len(fields)*2)
+	for i := range fields {
+		args = append(args, fields[i], vals[i])
+	}
+	if err := c.HSet(ctx, "h", args...).Err(); err != nil {
+		t.Fatalf("HSET: %v", err)
+	}
+
+	// HGETALL decodes to a map[string]string via the RESP3 `%` frame.
+	all, err := c.HGetAll(ctx, "h").Result()
+	if err != nil {
+		t.Fatalf("HGETALL (RESP3 map): %v", err)
+	}
+	if len(all) != len(fields) {
+		t.Fatalf("HGETALL len = %d, want %d", len(all), len(fields))
+	}
+	for i, f := range fields {
+		if all[f] != vals[i] {
+			t.Errorf("HGETALL[%q] = %q, want %q", f, all[f], vals[i])
+		}
+	}
+
+	// HKEYS[i] must correspond to HVALS[i], and both must follow insertion
+	// order — repeated across two calls to prove the order is stable.
+	for attempt := 0; attempt < 2; attempt++ {
+		keys, err := c.HKeys(ctx, "h").Result()
+		if err != nil {
+			t.Fatalf("HKEYS: %v", err)
+		}
+		hv, err := c.HVals(ctx, "h").Result()
+		if err != nil {
+			t.Fatalf("HVALS: %v", err)
+		}
+		if len(keys) != len(fields) || len(hv) != len(fields) {
+			t.Fatalf("HKEYS/HVALS len = %d/%d, want %d", len(keys), len(hv), len(fields))
+		}
+		for i := range fields {
+			if keys[i] != fields[i] {
+				t.Errorf("attempt %d: HKEYS[%d] = %q, want %q (insertion order)", attempt, i, keys[i], fields[i])
+			}
+			if hv[i] != vals[i] {
+				t.Errorf("attempt %d: HVALS[%d] = %q, want %q", attempt, i, hv[i], vals[i])
+			}
+		}
+	}
+}
