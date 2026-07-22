@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Docker-backed redis-cli shim for toykv's §5 redis-client compatibility
+# sweep — no local redis/valkey install required.
+#
+# It runs the redis-cli that ships inside the Valkey image (a valkey-cli
+# compatibility binary) and shares the host network namespace, so a plain
+# `-h 127.0.0.1 -p <port>` reaches a loopback toykv server. Put this
+# directory on PATH (as `make compat` does) and every tool that execs a
+# bare `redis-cli` — including test/e2e's TestRedisCLI_ByteCompat — works
+# unchanged.
+#
+# Override the image with TOYKV_COMPAT_IMAGE (defaults to the same Valkey
+# image the benchmarks use). Requires Docker and Linux host networking.
+set -euo pipefail
+
+image="${TOYKV_COMPAT_IMAGE:-valkey/valkey:8-alpine}"
+
+docker_flags=(--rm --network host)
+# Attach stdin only when it is piped (e.g. `printf '…' | redis-cli`), so a
+# non-interactive `docker run` still forwards a here-doc / pipe while a
+# plain arg invocation stays clean.
+if [ ! -t 0 ]; then
+	docker_flags+=(-i)
+fi
+
+exec docker run "${docker_flags[@]}" "$image" redis-cli "$@"
