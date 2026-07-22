@@ -131,6 +131,81 @@ func TestClient_Do_AllFrameKinds(t *testing.T) {
 	}
 }
 
+// TestClient_Do_DecodesRESP3 is the end-to-end gate for the codec-symmetry
+// fix: a client sends HELLO 3 and then HGETALL, and the server replies with
+// native RESP3 frames (`%` map, `_` null). Before the reader learned the
+// RESP3 kinds this failed with `resp: unknown prefix '%'`; the whole point
+// is that the client now decodes the map. The server side writes with
+// WriteFrameProto(…, Proto3) because Client.Do's own writer is RESP2-only.
+func TestClient_Do_DecodesRESP3(t *testing.T) {
+	t.Parallel()
+	clientSide, serverSide := net.Pipe()
+	c := NewConn(clientSide)
+	defer c.Close()
+
+	// helloReply mimics the HELLO 3 handshake map; hgetallReply is the
+	// HGETALL map with a nil value to exercise the `_` null decode too.
+	helloReply := resp.Map(
+		resp.Bulk([]byte("proto")), resp.Int(3),
+	)
+	hgetallReply := resp.Map(
+		resp.Bulk([]byte("f1")), resp.Bulk([]byte("v1")),
+		resp.Bulk([]byte("f2")), resp.Null(),
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer serverSide.Close()
+		sr := resp.NewReader(serverSide)
+		sw := resp.NewWriter(serverSide)
+		for _, reply := range []resp.Value{helloReply, hgetallReply} {
+			if _, err := sr.ReadCommand(); err != nil {
+				t.Errorf("server ReadCommand: %v", err)
+				return
+			}
+			if err := sw.WriteFrameProto(reply, resp.Proto3); err != nil {
+				t.Errorf("server WriteFrameProto: %v", err)
+				return
+			}
+			if err := sw.Flush(); err != nil {
+				t.Errorf("server Flush: %v", err)
+				return
+			}
+		}
+	}()
+
+	hello, err := c.Do("HELLO", "3")
+	if err != nil {
+		t.Fatalf("HELLO 3: %v", err)
+	}
+	if hello.Kind != resp.KindMap {
+		t.Fatalf("HELLO 3 reply kind = %q, want map", byte(hello.Kind))
+	}
+
+	got, err := c.Do("HGETALL", "h")
+	if err != nil {
+		t.Fatalf("HGETALL: %v", err)
+	}
+	if got.Kind != resp.KindMap {
+		t.Fatalf("HGETALL reply kind = %q, want map", byte(got.Kind))
+	}
+	if len(got.Array) != 4 {
+		t.Fatalf("HGETALL map has %d flat elements, want 4", len(got.Array))
+	}
+	if string(got.Array[0].Bytes) != "f1" || string(got.Array[1].Bytes) != "v1" {
+		t.Errorf("pair 0 = (%q,%q), want (f1,v1)", got.Array[0].Bytes, got.Array[1].Bytes)
+	}
+	if string(got.Array[2].Bytes) != "f2" {
+		t.Errorf("pair 1 field = %q, want f2", got.Array[2].Bytes)
+	}
+	if got.Array[3].Kind != resp.KindNull {
+		t.Errorf("pair 1 value kind = %q, want null", byte(got.Array[3].Kind))
+	}
+
+	<-done
+}
+
 func TestClient_Do_EncodesMultiArg(t *testing.T) {
 	t.Parallel()
 	c, fs := newFakeServer(t, []resp.Value{resp.OK()})
