@@ -437,12 +437,17 @@ func (s *Store) incrBy(k string, delta int64) (int64, error) {
 // "list", "hash"). All payloads are fresh copies owned by the caller.
 // A zero ExpireAt means no expiry.
 type SnapshotEntry struct {
-	Key      string
-	Type     string
-	Value    []byte            // Type == "string"
-	List     [][]byte          // Type == "list", front to back
-	Hash     map[string][]byte // Type == "hash"
-	ExpireAt time.Time
+	Key   string
+	Type  string
+	Value []byte            // Type == "string"
+	List  [][]byte          // Type == "list", front to back
+	Hash  map[string][]byte // Type == "hash"
+	// HashOrder lists the hash field names in insertion order (Type ==
+	// "hash"). BGREWRITEAOF emits HSET fields in this order so the rebuilt
+	// AOF replays into the same HKEYS/HVALS correspondence the live hash
+	// had. Ranging Hash directly would lose that order.
+	HashOrder []string
+	ExpireAt  time.Time
 }
 
 // Snapshot returns every non-expired key in the store as a slice of
@@ -474,6 +479,7 @@ func (s *Store) Snapshot() []SnapshotEntry {
 			for f, v := range e.hash {
 				se.Hash[f] = append([]byte(nil), v...)
 			}
+			se.HashOrder = append([]string(nil), e.fieldOrder...)
 		}
 		out = append(out, se)
 	}
