@@ -81,6 +81,14 @@ redis-cli -p 6390 --tls --cacert cert.pem PING
 
 Since M15, **protected mode** is on by default: the server refuses to *start* on a non-loopback bind (e.g. `-addr 0.0.0.0:6390`) unless `-requirepass` or TLS is set, exiting non-zero with a message naming the fix. Bind a loopback address, add auth/TLS, or pass `-protected-mode no` to override. This is the deliberate breaking change that earns `2.0.0` — see [ADR-0016](./docs/adr/0016-protected-mode-and-atomic-keyspace-ops.md).
 
+Replicated (M18, single-node preview of the v3 Raft path):
+
+```sh
+./bin/toykv -addr :6390 -dir ./data -replicate -node-id n1
+```
+
+`-replicate` routes every mutating command through an embedded [ToyRaft](https://github.com/prajwalmahajan101/toyraft) `Propose → Apply` cycle before it touches the store; reads and local-admin commands stay local. On a single node this is a functional preview — the node is trivially its own leader, the Raft log is in memory, and the AOF remains the durability source (state re-derives from the AOF on restart), so behaviour and durability match standalone. Multi-node replication, election, and client routing arrive in M19–M20. See [ADR-0018](./docs/adr/0018-raft-embedding-command-envelope-and-statemachine-seam.md) for the state-machine seam.
+
 The TUI:
 
 ```sh
