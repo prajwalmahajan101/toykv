@@ -8,7 +8,10 @@ v1  M0 Skeleton ─► M1 RESP echo ─► M2 Store core ─► M3 AOF + crash �
 
 v2  M10 RESP3 ─► M11 Types (lists+hashes, AOF v3) ─► M12 AUTH/TLS ─►
     M13 INFO + SCAN ─► M14 TUI v2 ─► M15 Hardening (protected-mode + atomic ops) ─►
-    M16 Observability (OpenTelemetry → LGTM) ─► M17 Bench + polish ─► v2.0.0   (committed — active plan)
+    M16 Observability (OpenTelemetry → LGTM) ─► M17 Bench + polish ─► v2.0.0   ✅ shipped 2026-07-22
+
+v3  M18 Raft embed ─► M19 Cluster + election ─► M20 Client routing ─►
+    M21 WAIT + INFO repl ─► M22 TUI v3 (cluster) ─► M23 Bench + dogfood + polish ─► v3.0.0   (committed — ToyRaft dogfood gate)
 ```
 
 ## Why this order — bottom-up + risk-first
@@ -251,30 +254,127 @@ Deferred from the committed M10–M17 cut so v2 stays a focused "usable single-n
 
 **Cut criteria:** RESP3 + lists + hashes + AUTH + TLS + `INFO` + `SCAN` + **protected mode** + **atomic `RENAME`/`RENAMENX`/`COPY`** + **OpenTelemetry (logs/metrics/traces)** shipped, each feature area with a corresponding ADR, and the M17 release-hardening gate (flaky-test fix, lint config, security review, v1→v2 AOF upgrade test, observability no-regression check) all green.
 
-## v3.0 — Distributed (the `tinyraft` payoff)
+## v3.0 — Distributed (the ToyRaft payoff · committed)
 
-This is where toykv earns the original "Raft state-machine demo" framing. Only attempt if `tinyraft` is real and needs a state machine.
+This is where toykv earns the original "Raft state-machine demo" framing. It embeds [`github.com/prajwalmahajan101/toyraft`](https://github.com/prajwalmahajan101/toyraft) (`v1.0.0-rc.1`) as a vendored consensus library. Standalone mode stays byte-identical to v2; `-replicate` opts into a Raft-backed cluster. Same execution discipline as v1/v2 — branch off `main`, merge via PR, **no direct commits to `main`** — and the same governing principle: **the highest-blast-radius surface ships and is crash/linearizability-tested earliest, and each milestone owns its own risk test.**
 
-| Theme | Feature |
-|---|---|
-| **Replication** | Embed `tinyraft`; `toykv --replicate -peers <list>` for 3-node clusters |
-| Replication | Leader/follower roles; leader writes go through Raft log; followers replay |
-| Replication | AOF becomes a snapshot device; Raft log is the durability source of truth |
-| Consistency | `WAIT numreplicas timeout` |
-| Wire | `INFO replication` (role, leader addr, lag) |
-| Wire | `CLUSTER NODES` (minimal — **not** Redis Cluster's slot model) |
-| TUI | Cluster view: replicas, lag, current leader, log offset |
-| **Types** | **Sorted sets**: `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, `ZRANK`, `ZSCORE` |
-| **Types** | **Sets**: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`, `SDIFF` |
-| **Pub/Sub** | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PSUBSCRIBE` (built on the RESP3 push frames delivered in v2 M10) |
-| Events | `__keyspace@0__:k` notifications for `expired`/`del`/`set` |
-| Storage | Optional sharded store (only if benchmarks justify it) |
+> **Goal:** a replicated, leader-based, **single-writer** toykv cluster. v3.0 is **replication only** — sets, sorted sets, pub/sub, and keyspace notifications are deferred to the [v3.x backlog](#v3x-backlog-not-in-committed-v30-scope). The narrowing keeps the release focused on the actual ToyRaft payoff.
 
-**Breaking risk:** AOF format may bump again for new types (sets / sorted sets). The RESP3 wire bump already landed in v2 (M10) — additive, RESP2 clients still work via opt-out — so v3 pub/sub reuses its push frames rather than introducing a new protocol break.
+> **Mutual unblock (the dogfood gate).** ToyRaft is at `v1.0.0-rc.1` with a **frozen** public API (`pkg/raft.Node`, `StateMachine`, `Storage`, `Transport`); its own roadmap gates the `v1.0.0` tag on a real consumer embedding it. toykv's running cluster **is** that gate. So M18–M23 and ToyRaft `v1.0.0` unlock each other — and M23 ships a **migration / dogfooding report** (`docs/TOYRAFT-MIGRATION-REPORT.md`, written incrementally across M18–M22) back to ToyRaft (bugs, API friction, docs gaps, feature requests) as first-class output, not an afterthought.
+
+> **Decisions locked (2026-09-04).**
+> 1. **Scope — replication only.** Types/pub-sub/events → v3.x.
+> 2. **Reads — leader by default; `READONLY` opt-in for stale replica reads.** No linearizable-read guarantee (ToyRaft `v1` has no ReadIndex — documented).
+> 3. **Write routing — client-driven redirect.** A follower returns a leader-hint error; the client/CLI/TUI retry against the leader.
+> 4. **Compaction — ship on `rc.1` with an unbounded Raft log.** `StateMachine.Snapshot/Restore` are *structured* now (store serialization built + tested) but stubbed `ErrSnapshotUnsupported` per the `v1` contract, so real compaction lands free when ToyRaft `v2` ships snapshots. Deferred to v3.x.
+
+### The integration seam
+
+toykv today mutates at a single `dispatch()` chokepoint: **mutate store → append AOF → reply**. Replicated, a mutating command becomes **`raft.Propose(envelope)` → ToyRaft replicates → `StateMachine.Apply` mutates store + appends AOF → reply**. AOF becomes each node's *local* applied-state durability; the **Raft log is the replication source of truth**. The existing `replayApply` pattern (dispatch reused for AOF replay) means the seam is small and single-point.
+
+### Why this order — bottom-up + risk-first (continued)
+
+Numbering continues the single sequence (**M18–M23**); the release tag is `v3.0.0`.
+
+| Risk | Severity | Owned by |
+|---|---|---|
+| `StateMachine.Apply` determinism / apply-exactly-once (silent replica divergence) | **Critical** | M18 — determinism + apply-once test |
+| mutate→propose→apply→AOF ordering & crash durability through the new path | **Critical** | M18 — durability suite with the SM in the loop |
+| Acked-write loss across leader failover / partition heal | **Critical** | M19 — kill-leader + partition linearizability test |
+| Split-brain / double-leader | High | M19 — same |
+| A write reaching a follower silently dropped | High | M20 — redirect test |
+| Stale/torn reads violating the chosen read model | Medium | M20 — read-model test |
+| `WAIT` over-reporting acks (a durability lie) | Medium | M21 — ack-truth test vs a slow/partitioned follower |
+| Raft peer transport is unauthenticated (ToyRaft threat model: trusted network only) | High (documented) | M23 — security note + bind guard |
+
+### M18 — Raft embedding + single-node replicated path *(the state-machine seam)*
+**Branch:** `feat/raft-embed` · **Depends on:** nothing new · **ADR:** 0018 — Raft embedding, command envelope & StateMachine seam
+*(The foundational, highest-blast-radius milestone — it owns the determinism + durability tests.)*
+- Add the `toyraft v1.0.0-rc.1` dependency.
+- Deterministic **command envelope** (encode `argv` → `[]byte`, version byte) — only *mutating* commands are replicated.
+- **Command classification table:** mutating (→ `Propose`), read (local/leader), local-admin never replicated (`HELLO`, `AUTH`, `PING`, `INFO`, `BGREWRITEAOF`).
+- Implement the toykv `raft.StateMachine`: `Apply` decodes the envelope → applies to the store → appends AOF (reuses today's handler logic). `Snapshot`/`Restore` return `ErrSnapshotUnsupported` per the `v1` contract, but the store-serialization they will call is built and unit-tested now (forward-compat for ToyRaft `v2`).
+- Run a **single-node cluster** (`Peers=[self]`, self trivially leader): every mutating command flows `Propose → Apply`. Standalone (non-`-replicate`) path untouched.
+- **Owned risk test:** (1) determinism — the same command stream applied twice yields byte-identical store state; (2) apply-once & ordering — single-node propose→apply round-trips every mutating command in strict index order; (3) crash durability preserved through the new path (the M3/M11 suite green with the SM in the loop).
+- **Exit:** single-node `-replicate` serves every mutating command via `Propose→Apply`; store state matches standalone; durability suite green.
+
+### M19 — Multi-node replication + leader election *(the distributed core)*
+**Branch:** `feat/cluster` · **Depends on:** M18 · **ADR:** 0019 — cluster mode, transport & raft-log storage layout
+- `-replicate -peers <id@host:raftport,…> -raft-addr -raft-dir`. Wire ToyRaft `pkg/transport/http` (peer port distinct from the client port) + `pkg/storage/file` for the Raft log.
+- N-node cluster (odd N ≥ 3); role tracking; `LeaderHint()` surfaced. Standalone mode unchanged.
+- **Owned risk test:** 3-node cluster — a leader-acked write appears on all followers; **kill the leader → new leader elected → no acked write lost**; partition heal reconciles divergent tails. Plus a **linearizability harness** on `SET`/`GET`/`INCR` (ToyRaft's Porcupine harness or a go-redis-driven recorder), run under `-race`.
+- **Exit:** 3-node cluster replicates all writes; survives leader kill + partition with zero acked-write loss; linearizability harness green.
+
+### M20 — Client routing: write redirect + read model
+**Branch:** `feat/cluster-routing` · **Depends on:** M19 · **ADR:** 0020 — write redirection & cluster read consistency
+- Follower write → leader-hint redirect error (`-MOVED`-style / `-ERR NOTLEADER host:port`). `internal/client` (CLI **and** TUI) auto-retry against the hint with bounded backoff.
+- Reads: leader by default (follower reads redirect); **`READONLY`** opt-in lets a follower serve stale local reads (documented non-linearizable).
+- **Owned risk test:** a client hitting a random node completes every write via redirect and reads consistently from the leader; `READONLY` reads return follower-local state; redirect storms during an election converge under bounded retry.
+- **Exit:** any-node client completes all writes; leader/replica read model behaves as specified; CLI/TUI follow redirects transparently.
+
+### M21 — `WAIT` + INFO replication + cluster observability
+**Branch:** `feat/wait-info-repl` · **Depends on:** M19 (reads `Status().MatchIndex`) · **ADR:** 0021 — replication acknowledgement & telemetry model
+- `WAIT numreplicas timeout` — block until N replicas ack the write's index (driven by leader `MatchIndex`); truthful, never over-reports.
+- `INFO replication` section — role, leader addr, connected replicas, per-replica lag, commit/apply/log offsets.
+- OTel (M16 surface) extended: spans for propose→commit→apply, replication-lag & role gauges → the existing LGTM stack.
+- **Owned risk test:** `WAIT N t` returns only once ≥N replicas truly hold the index (verified against a partitioned/slow follower it does **not** over-count); `INFO replication` fields match live cluster state.
+- **Exit:** `WAIT` matches Redis semantics; `INFO replication` accurate; raft signals visible in Grafana.
+
+### M22 — TUI v3: cluster view
+**Branch:** `feat/tui-v3` · **Depends on:** M20, M21 · **ADR:** *(none expected — consumes M20/M21; revisit only if a real contract emerges, per the M13/M14 precedent)*
+- Cluster pane: replicas, current leader, per-node role, lag, log offset (fed by `INFO replication`); AUTH + redirect-aware connect.
+- **Owned risk test:** `teatest` cluster-view smoke against a running 3-node cluster; a leader change is reflected in the view.
+- **Exit:** the TUI renders live cluster topology and follows leadership changes; all v2 keybindings still pass.
+
+### M23 — Bench + dogfood report + polish + v3.0.0
+**Branch:** `feat/release-v3` · **Depends on:** M18–M22 all merged
+- Re-run `make bench` in cluster mode (replication cost vs standalone); README records the numbers.
+- **Migration / dogfooding report (`docs/TOYRAFT-MIGRATION-REPORT.md`) — a release deliverable.** The report is **authored incrementally as the integration happens** — each of M18–M22 appends its findings (confirmed bugs with repros, API friction, docs gaps, feature requests) as they surface against running code — and is finalized here at M23, then delivered to ToyRaft as its `v1.0.0` dogfood-gate feedback. This is the reciprocal half of the mutual unblock. *(Not pre-written: findings are recorded only once observed in integration.)*
+- **Security note & bind guard:** the ToyRaft peer transport is unauthenticated/plaintext (ToyRaft threat model = trusted network). Document it; extend protected-mode to refuse an untrusted-network raft bind without an explicit override. Update [`docs/SECURITY.md`](./SECURITY.md).
+- Docs: PRD/HLD/LLD deltas for replication; README cluster quickstart; a `deploy/` compose for a local 3-node cluster.
+- ADR reconciliation: 0018–0021 land after their owning milestones (M18/M19/M20/M21) per [`docs/adr/README.md`](./adr/README.md); M23 verifies all four files exist and the index note is current.
+- **Coordinate ToyRaft `v1.0.0`:** bump the dependency `rc.1 → v1.0.0` once ToyRaft tags it off this integration.
+- **Release-hardening gate (all must pass before the tag):** linearizability harness green on `-race`; leader-kill / partition-heal suite green; standalone-mode benchmarks unchanged vs v2; crash-durability suite green with the SM in the loop; migration report delivered.
+- Goreleaser reused from v1/v2; tag `v3.0.0`.
+
+### v3.x backlog (not in committed v3.0 scope)
+
+Deferred from the committed M18–M23 cut so v3.0 stays a focused "replicated single-writer cluster," not a distributed-Redis re-implementation. These ride the v3 architecture and unblock during the v3 line as small upstream features land.
+
+| Theme | Item | Blocker / note |
+|---|---|---|
+| Compaction | Real Raft-log compaction via `StateMachine.Snapshot/Restore` | Unblocks on **ToyRaft `v2`** snapshots; the wiring is already structured in M18 (store serialization built) |
+| Reads | Linearizable reads (ReadIndex / lease reads) | Unblocks on **ToyRaft** ReadIndex; until then `READONLY` reads are explicitly stale |
+| Membership | Dynamic add/remove node without a full-cluster restart | Unblocks on **ToyRaft** joint-consensus config changes |
+| Types | **Sets**: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`, `SDIFF` | Ride the replicated `Apply` path; AOF may bump to v4 |
+| Types | **Sorted sets**: `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, `ZRANK`, `ZSCORE` | Same |
+| Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PSUBSCRIBE` on the RESP3 push frames (v2 M10) | Cluster-wide fan-out is its own design question |
+| Events | `__keyspace@0__:k` notifications for `expired`/`del`/`set` | Depends on pub/sub |
+| Wire | `CLUSTER NODES` (minimal — **not** Redis Cluster's slot model) | Convenience introspection once topology is dynamic |
+
+**Breaking risk in v3.0:** minimal. Replication is opt-in (`-replicate`); standalone mode is byte-identical to v2. The only behavioural addition to the deployment contract is the M23 raft-bind guard, overridable. AOF format is untouched by v3.0 (typed-record bumps only arrive with the deferred set/sorted-set work).
 
 **Out of scope even at v3:** Redis Cluster slot/sharding model, Sentinel, Lua / `MULTI` / `EXEC`. (Spec rejects these explicitly.)
 
-**Cut criteria:** 3-node cluster passes a Jepsen-style linearizability harness on `SET`/`GET`/`INCR`; `tinyraft` is independently released.
+**Cut criteria:** 3-node cluster passes the linearizability harness on `SET`/`GET`/`INCR` under `-race`; leader-kill + partition-heal lose no acked write; `WAIT` / `INFO replication` / redirect / `READONLY` all shipped with ADRs; standalone benchmarks unchanged; the migration report is delivered and **ToyRaft is tagged `v1.0.0`**.
+
+## v4.0 — deferred (not committed · gated on the mission growing past "learning artifact")
+
+v4 is **deliberately undefined**. The source spec is emphatic that the danger is scope creep — *"that's how you end up half-building Redis instead of finishing tinykv."* v3.0 delivers the original "Raft state-machine demo" thesis; anything past a replicated single-writer node is a **new mission**, not a continuation. This section collects the genuinely-major deferrals so they are tracked, not forgotten — each with the blocker that would have to clear first. **Nothing here is committed**, and several items stay rejected unless toykv's purpose changes from a learning artifact to a system meant to be run at scale.
+
+| Theme | Item | Gate / blocker |
+|---|---|---|
+| **Horizontal scale-out** | Multi-Raft-group sharding — key-space partitioned across independent Raft groups (a request routes to the group that owns the key) | Only if the mission changes to real horizontal scale. The single-group **Redis Cluster slot model stays rejected** — this would be a deliberately different, simpler design |
+| **Elastic membership** | Online cluster resize (grow/shrink) as an operator workflow, not a restart | ToyRaft joint-consensus membership (also a v3.x item at the command level; v4 is the *operational* story around it) |
+| **Read scaling** | Learner / non-voting read-replica nodes; cross-region followers | ToyRaft learner-role support + ReadIndex |
+| **Peer security** | mTLS + auth on the Raft peer transport (lift the trusted-network-only ceiling) | ToyRaft transport security (currently trusted-network-only by design) |
+| **Backup / DR** | Point-in-time snapshot export + restore-to-new-cluster; log shipping to object storage | ToyRaft `v2` snapshots (v3.x compaction first) |
+| **Client ecosystem** | A first-class toykv Go client library (beyond `internal/client`); optional other-language SDKs | Only worthwhile once external consumers exist |
+| **Transactions** | `MULTI` / `EXEC` / `WATCH` | **Spec-rejected** — listed for completeness only; revisit only on an explicit mission change |
+| **Scripting** | Lua / server-side scripting | **Spec-rejected** — same |
+| **Failover ops** | Graceful leadership transfer for planned maintenance; rolling-restart orchestration | ToyRaft leadership-transfer (post-`v1`) |
+
+**Honest note:** the realistic terminal state for toykv is **v3.0** — a working, replicated, observable, safe-by-default single-writer KV that proves the ToyRaft integration. v4 exists in this document so that if the project's purpose ever changes, the deferrals and their upstream gates are already mapped. Treat "ship v3.0, stop" as the default, exactly as "ship v1, stop" was for the v1 line.
 
 ## Honest framing — pick one trajectory
 
@@ -287,6 +387,8 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | **C — v1 → v3 (skip or trim v2)** | Jump to the Raft-distributed payoff — the actual downstream dependency | Only once `ToyRaft` ships as a vendorable library. v3 is blocked on `ToyRaft` v1.0-rc1; v2 can be skipped or trimmed to AUTH+TLS if scope is tight, since downstream work needs v3 (multi-node), not v2 |
 
 **Decided 2026-07-13: Option B** — v1.0.0 has seen ~4 weeks of real use since the 2026-06-17 tag, and the gaps that matter (no auth, string-only values, `KEYS *`-only iteration) are worth closing. The full M10–M17 arc is now the committed active plan. The asymmetry the tracker records still holds: **v2 is polish; v3 is the real downstream dependency** — so Option C ("trim v2 to AUTH+TLS, jump to v3") stays live the moment `ToyRaft` ships as a vendorable library, and v2 can fall back to M12-only if scope tightens without abandoning the release.
+
+**Updated 2026-09-04: Option C is now active — v2 → v3.** v2.0.0 shipped 2026-07-22, and ToyRaft has reached `v1.0.0-rc.1` with a frozen public API — the exact precondition Option C named. The committed [v3.0 arc (M18–M23)](#v30--distributed-the-toyraft-payoff--committed) is now the active plan. The trajectory is the full A → B → C sequence, not a jump: v1 shipped, v2 shipped, v3 is the real downstream payoff that motivated the whole project. v3.0 is scoped to **replication only** (the ToyRaft thesis); everything else is v3.x/v4 deferral.
 
 ## Status tracking
 
@@ -309,7 +411,13 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M14 | TUI v2 | ✅ | [#32](https://github.com/prajwalmahajan101/toykv/pull/32) | `m14` |
 | M15 | Hardening: protected mode + atomic keyspace ops | ✅ | [#33](https://github.com/prajwalmahajan101/toykv/pull/33) | `m15` |
 | M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ✅ | [#35](https://github.com/prajwalmahajan101/toykv/pull/35) | `m16` |
-| M17 | Bench + polish + v2.0.0 | 🚧 Release PR open | [#36](https://github.com/prajwalmahajan101/toykv/pull/36) | `v2.0.0` (pending merge + tag) |
+| M17 | Bench + polish + v2.0.0 | ✅ | [#36](https://github.com/prajwalmahajan101/toykv/pull/36) | `v2.0.0` |
+| M18 | Raft embedding + single-node replicated path | 📋 Planned | — | `m18` |
+| M19 | Multi-node replication + leader election | 📋 Planned | — | `m19` |
+| M20 | Client routing: write redirect + read model | 📋 Planned | — | `m20` |
+| M21 | `WAIT` + INFO replication + cluster observability | 📋 Planned | — | `m21` |
+| M22 | TUI v3: cluster view | 📋 Planned | — | `m22` |
+| M23 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
 
 ## Changes from the previous roadmap
 
@@ -327,3 +435,12 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 - **Per-milestone dependency + ADR ownership added.** Each of M10–M17 now names what it depends on and which ADR it owns (RESP3 negotiation → M10, tagged-union store + AOF v3 → M11, AUTH/TLS → M12, SCAN cursor + INFO wire format → M13, protected-mode + atomic keyspace ops → M15, OpenTelemetry signal model → M16), so ADRs are written after their owning milestone merges rather than batched at release (M17).
 - **New M15 "Hardening" milestone; release renumbered M15 → M16.** Added to *earn* the `2.0.0` tag rather than default to it. Everything in M10–M14 is additive (opt-in RESP3, backward-compatible AOF v3), so by semver alone the arc is a `1.x`. M15 introduces the one deliberate breaking change — **protected mode** (refuse a non-loopback bind without auth) — and promotes **atomic `RENAME`/`RENAMENX`/`COPY`** out of the v2.x backlog to close a real correctness gap (racy today). One breaking change + one correctness win, not feature-count padding. The v2 ADR set grows from four to five, the cut criteria add protected mode + atomic renames, and M16 gains an explicit release-hardening gate (flaky-test fix, `.golangci.yml` schema fix, security review of the auth/TLS/protected-mode surface, v1→v2 AOF upgrade test).
 - **New M16 "Observability" milestone; release renumbered M16 → M17 (added 2026-07-16).** OpenTelemetry for the three signals — logs → **L**oki, metrics → **M**imir, traces → **T**empo, viewed in **G**rafana (the **LGTM** stack) — exported over OTLP. Fully additive and off unless an endpoint is configured, so it does **not** change the semver story (M15 still earns the major); it exists to make the v2 goal-word "observable" true rather than aspirational. It lands after every command surface is final (so instrumentation isn't chasing a moving target) and before the release. The v2 ADR set grows from six to seven (OpenTelemetry signal model + OTLP export, owned by M16), the cut criteria add the three signals, the release gate adds an OTel-off no-regression + durability-with-instrumentation check, and the v2.x-backlog "Prometheus `/metrics`" item is folded into M16's OTLP metrics (native scrape endpoint stays optional).
+
+**v3 additions (M18–M23, planned 2026-09-04):**
+
+- **v3 scoped to replication only.** The earlier v3 sketch bundled replication *and* sets/sorted-sets *and* pub/sub *and* keyspace events into one table. Split: v3.0 = replication (the ToyRaft thesis); types/pub-sub/events → [v3.x backlog](#v3x-backlog-not-in-committed-v30-scope). Keeps the release a focused proof of the ToyRaft integration rather than another feature pile.
+- **`tinyraft` → `toyraft` (`v1.0.0-rc.1`).** The library exists and its public API (`pkg/raft.Node`, `StateMachine`, `Storage`, `Transport`) is frozen. The old roadmap's "only attempt if `tinyraft` is real" precondition is met.
+- **Mutual dogfood gate made explicit.** ToyRaft gates its own `v1.0.0` on a real consumer embedding it; toykv's cluster is that consumer. M23 ships a **[migration / dogfooding report](./TOYRAFT-MIGRATION-REPORT.md)** back to ToyRaft as a first-class release deliverable, and bumps the dependency `rc.1 → v1.0.0`.
+- **Four architecture decisions locked (2026-09-04):** replication-only scope; leader reads + `READONLY` opt-in stale replica reads (no ReadIndex in ToyRaft `v1`); client-driven write redirect; ship on `rc.1` with an unbounded Raft log (compaction structured now, deferred to v3.x pending ToyRaft `v2` snapshots).
+- **Per-milestone dependency + ADR ownership** continues the v2 pattern: Raft-embed/StateMachine seam → M18 (ADR-0018), cluster/transport/storage → M19 (ADR-0019), write-redirect + read model → M20 (ADR-0020), `WAIT` + replication telemetry → M21 (ADR-0021). M22 (TUI v3) consumes M20/M21 with no new ADR expected.
+- **New v4.0 deferral section added.** Genuinely-major post-v3 ambitions (multi-Raft-group sharding, elastic membership, learner reads, peer mTLS, backup/DR, client SDKs) are tracked with their upstream gates — explicitly **not committed**, with the spec-rejected items (`MULTI`/`EXEC`, Lua) called out. "Ship v3.0, stop" is the default terminal state.
