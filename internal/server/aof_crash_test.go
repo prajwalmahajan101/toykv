@@ -24,9 +24,10 @@ import (
 // test binary. When set, TestMain detects them and runs as a server
 // instead of as a regular Go test process.
 const (
-	envChildMode = "TOYKV_AOF_CHILD"
-	envChildDir  = "TOYKV_AOF_CHILD_DIR"
-	envChildAddr = "TOYKV_AOF_CHILD_ADDR"
+	envChildMode      = "TOYKV_AOF_CHILD"
+	envChildDir       = "TOYKV_AOF_CHILD_DIR"
+	envChildAddr      = "TOYKV_AOF_CHILD_ADDR"
+	envChildReplicate = "TOYKV_AOF_CHILD_REPLICATE"
 )
 
 // TestMain implements the self-re-exec trick (LLD §M3 risk test). When
@@ -58,6 +59,10 @@ func runChildServer() {
 		Store:       store.New(),
 		Dir:         dir,
 		FsyncPolicy: aof.FsyncAlways,
+		// When the parent asks for a replicated child, the writer path runs
+		// through Propose→Apply — the M18 durability check that the AOF is
+		// still written exactly once (inside Apply) so acked writes survive.
+		Replicate: os.Getenv(envChildReplicate) == "1",
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "child New:", err)
@@ -168,12 +173,99 @@ func TestAOF_CrashInjection_Always(t *testing.T) {
 	}
 }
 
+// TestAOF_CrashInjection_Replicated is the M18 durability check with the state
+// machine in the loop: under -replicate, every acked SET flows Propose→Apply
+// and the AOF is written exactly once inside Apply. A SIGKILL mid-stream must
+// still leave every acked write recoverable — proving the new path preserves
+// the M3 durability contract. Restart-verify runs in-process (non-replicated):
+// the AOF records are the same canonical SETs regardless of who wrote them, so
+// plain replay reconstructs the state.
+func TestAOF_CrashInjection_Replicated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("crash injection forks a subprocess; skipped under -short")
+	}
+
+	dir := t.TempDir()
+	child, addr := startChild(t, dir, "TestAOF_CrashInjection_Replicated", envChildReplicate+"=1")
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		_ = child.Process.Kill()
+		t.Fatalf("dial child: %v", err)
+	}
+	rdr := resp.NewReader(c)
+	wtr := resp.NewWriter(c)
+
+	const total = 120
+	killAt := 53
+	acked := make(map[string]string, total)
+	for i := 0; i < total; i++ {
+		k := fmt.Sprintf("k%03d", i)
+		v := fmt.Sprintf("v%03d", i)
+		if err := wtr.WriteFrame(resp.Array(
+			resp.Bulk([]byte("SET")),
+			resp.Bulk([]byte(k)),
+			resp.Bulk([]byte(v)),
+		)); err != nil {
+			break
+		}
+		if err := wtr.Flush(); err != nil {
+			break
+		}
+		v2, err := rdr.ReadFrame()
+		if err != nil {
+			break // killed before ack landed
+		}
+		if v2.Kind == resp.KindSimpleString && v2.Str == "OK" {
+			acked[k] = v
+		}
+		if i == killAt {
+			if err := child.Process.Signal(syscall.SIGKILL); err != nil {
+				t.Fatalf("SIGKILL: %v", err)
+			}
+		}
+	}
+	_ = c.Close()
+	_ = child.Wait()
+
+	if len(acked) < killAt {
+		t.Fatalf("only %d acks recorded before kill; test design broken", len(acked))
+	}
+
+	// Restart in-process (plain replay) and verify every acked SET survived.
+	s2 := setupServerWithAOF(t, dir, aof.FsyncAlways)
+	_, cancel, errCh := runServer(t, s2)
+	defer func() {
+		cancel()
+		<-errCh
+		_ = s2.Close()
+	}()
+	c2, r2, w2 := dial(t, s2.Addr())
+	defer c2.Close()
+
+	missing := 0
+	for k, v := range acked {
+		writeCmd(t, w2, "GET", k)
+		got := readReply(t, r2)
+		if got.Kind != resp.KindBulkString || got.IsNull || string(got.Bytes) != v {
+			missing++
+			if missing <= 5 {
+				t.Errorf("acked key %q: got %+v, want bulk %q", k, got, v)
+			}
+		}
+	}
+	if missing > 0 {
+		t.Fatalf("%d/%d acked SETs lost across SIGKILL under -replicate", missing, len(acked))
+	}
+}
+
 // startChild forks the test binary into server mode and waits for it to
 // print its bound address on stdout. parentTest is the name of the
 // caller test — passed through -test.run so the child never tries to
 // execute the rest of the test suite if TestMain ever fails to detect
-// child mode.
-func startChild(t *testing.T, dir, parentTest string) (*exec.Cmd, string) {
+// child mode. extraEnv adds environment variables to the child (e.g. the
+// replicate toggle).
+func startChild(t *testing.T, dir, parentTest string, extraEnv ...string) (*exec.Cmd, string) {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -192,6 +284,7 @@ func startChild(t *testing.T, dir, parentTest string) (*exec.Cmd, string) {
 		envChildDir+"="+dir,
 		envChildAddr+"="+addr,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("StdoutPipe: %v", err)
