@@ -34,6 +34,8 @@ flags:
   -tls-cert    string  path to the TLS certificate (PEM); requires -tls-key
   -tls-key     string  path to the TLS private key (PEM); requires -tls-cert
   -protected-mode string  refuse a non-loopback bind without auth/TLS: yes|no (default "yes")
+  -replicate           enable the Raft-replicated command path (M18 single-node) (default false)
+  -node-id     string  Raft node id; used only with -replicate (default "n1")
   -otel-endpoint    string  OTLP collector endpoint host:port ("" disables all telemetry)
   -otel-protocol    string  OTLP transport: grpc|http (default "grpc")
   -otel-service-name string service.name reported to telemetry (default "toykv")
@@ -53,6 +55,9 @@ func main() {
 		tlsCert     = flag.String("tls-cert", "", "path to the TLS certificate (PEM); requires -tls-key")
 		tlsKey      = flag.String("tls-key", "", "path to the TLS private key (PEM); requires -tls-cert")
 		protected   = flag.String("protected-mode", "yes", "refuse a non-loopback bind without auth/TLS: yes|no")
+
+		replicate = flag.Bool("replicate", false, "enable the Raft-replicated command path (M18 single-node)")
+		nodeID    = flag.String("node-id", "n1", "Raft node id; used only with -replicate")
 
 		otelEndpoint    = flag.String("otel-endpoint", "", "OTLP collector endpoint host:port; \"\" disables telemetry")
 		otelProtocol    = flag.String("otel-protocol", "grpc", "OTLP transport: grpc|http")
@@ -133,6 +138,8 @@ func main() {
 		TLS:           tlsConf,
 		ProtectedMode: *protected,
 		Telemetry:     providers,
+		Replicate:     *replicate,
+		NodeID:        *nodeID,
 	})
 	if err != nil {
 		log.Error("server init failed", "err", err)
