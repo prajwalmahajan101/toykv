@@ -28,6 +28,13 @@ type connState struct {
 	// command/store/aof spans thread through it. May be nil on connStates
 	// built directly (replay, tests) — use context() to read it safely.
 	ctx context.Context
+	// applying marks a dispatch that is executing an already-committed command
+	// — a Raft Apply (Server.applyReplicated) or an AOF replay — rather than a
+	// fresh client request. The replicated dispatch propose gate reads it: when
+	// true the command runs locally instead of being re-proposed, so the
+	// mutate→appendIfLive path fires exactly once inside Apply. Only ever set
+	// on synthetic connStates, never on a live client connection.
+	applying bool
 }
 
 // context returns the connection's telemetry context, defaulting to

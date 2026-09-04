@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/prajwalmahajan101/toykv/internal/aof"
+	"github.com/prajwalmahajan101/toykv/internal/cluster"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 	"github.com/prajwalmahajan101/toykv/internal/store"
 	"github.com/prajwalmahajan101/toykv/internal/telemetry"
@@ -50,6 +51,14 @@ type Config struct {
 	// a no-op surface is installed, so instrumentation calls are always
 	// safe and cost nothing when telemetry is disabled.
 	Telemetry *telemetry.Providers
+	// Replicate opts into the Raft-backed replicated command path (M18). When
+	// false the server is byte-identical to v2 standalone. When true, mutating
+	// commands flow through Propose→Apply; reads and local-admin stay local.
+	Replicate bool
+	// NodeID is this node's Raft identifier; defaults to "n1" when Replicate is
+	// set and this is empty. Ignored in standalone mode. Multi-node peers
+	// (-peers) arrive in M19.
+	NodeID string
 }
 
 // Server is the TCP listener and command dispatcher.
@@ -89,6 +98,13 @@ type Server struct {
 	// read-modify-write, never across the rewrite itself.
 	rewriteMu       sync.Mutex
 	rewriteInFlight bool
+
+	// replicated is set when Config.Replicate is true and the cluster node is
+	// built. The dispatch propose gate reads it; when true it implies cluster
+	// is non-nil. cluster is the single-node Raft wrapper (M18); nil in
+	// standalone mode.
+	replicated bool
+	cluster    *cluster.Node
 }
 
 // now returns the current time according to the configured clock. Used
@@ -164,6 +180,25 @@ func New(cfg Config) (*Server, error) {
 			"replay_duration", stats.Duration,
 		)
 	}
+	// Build the cluster node after AOF replay: durable state is already
+	// re-derived from the AOF, and the in-memory Raft log starts empty (M18
+	// decision — AOF remains the durability source). The node is constructed
+	// here but not started until Run, so no Apply can race New. replicated is
+	// set only once cluster is non-nil, so the dispatch propose gate's
+	// s.replicated check safely implies s.cluster != nil.
+	if cfg.Replicate {
+		nodeID := cfg.NodeID
+		if nodeID == "" {
+			nodeID = "n1"
+		}
+		node, err := cluster.New(nodeID, s.applyReplicated, s.store.Snapshot, s.log)
+		if err != nil {
+			return nil, fmt.Errorf("server: build cluster node: %w", err)
+		}
+		s.cluster = node
+		s.replicated = true
+		s.log.Info("replication enabled", "node_id", nodeID)
+	}
 	if err := s.registerObservableGauges(); err != nil {
 		s.log.Warn("telemetry: observable gauge registration failed", "err", err)
 	}
@@ -178,8 +213,10 @@ func (s *Server) replayApply(argv [][]byte) error {
 	// Replay never writes replies to a client, so the connState's proto is
 	// irrelevant, but it must be authenticated so NOAUTH gating never
 	// rejects a replayed record. HELLO is not a mutating command and never
-	// appears in the AOF, so it is never replayed.
-	reply := s.dispatch(&connState{authenticated: true}, argv)
+	// appears in the AOF, so it is never replayed. applying is set so the
+	// replicated propose gate never re-proposes a replayed record (the cluster
+	// node isn't even built yet during replay).
+	reply := s.dispatch(&connState{authenticated: true, applying: true}, argv)
 	if reply.Kind == resp.KindError {
 		return errors.New(reply.Str)
 	}
@@ -196,6 +233,19 @@ func (s *Server) Close() error {
 		return nil
 	}
 	s.closed = true
+	cl := s.cluster
+	s.mu.Unlock()
+
+	// Stop the Raft node first, while the AOF writer is still live, so any
+	// committed entry mid-Apply completes its appendIfLive and is persisted.
+	// Only then detach and close the writer.
+	if cl != nil {
+		if err := cl.Stop(); err != nil {
+			s.log.Warn("cluster stop failed", "err", err)
+		}
+	}
+
+	s.mu.Lock()
 	w := s.aof
 	s.aof = nil
 	s.mu.Unlock()
@@ -233,6 +283,23 @@ func (s *Server) Run(ctx context.Context) error {
 	s.listener = l
 	s.mu.Unlock()
 	s.log.Info("listening", "addr", l.Addr().String())
+
+	// Start the cluster node and block until it wins its election before
+	// accepting clients, so a client's first write never races the single-node
+	// election into a spurious NOTLEADER. The node's lifetime is bounded by
+	// Stop (called in Close), not by ctx; Start's ctx bounds bring-up only.
+	if s.replicated {
+		if err := s.cluster.Start(ctx); err != nil {
+			return fmt.Errorf("server: start cluster: %w", err)
+		}
+		leaderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := s.cluster.WaitLeader(leaderCtx)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("server: cluster leadership not established: %w", err)
+		}
+		s.log.Info("cluster leader elected")
+	}
 
 	// The sweeper runs only while we're serving live traffic — never
 	// during replay (which happens in New, before Run). It exits when

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestSerializeSnapshotDeterministic(t *testing.T) {
 	first := SerializeSnapshot(append([]store.SnapshotEntry(nil), entries...))
 	// Feed a reordered copy; output must be byte-identical.
 	reordered := []store.SnapshotEntry{entries[2], entries[0], entries[1]}
-	if got := SerializeSnapshot(reordered); string(got) != string(first) {
+	if got := SerializeSnapshot(reordered); !bytes.Equal(got, first) {
 		t.Fatal("SerializeSnapshot must be independent of input entry order")
 	}
 }

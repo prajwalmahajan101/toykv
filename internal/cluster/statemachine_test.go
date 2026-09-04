@@ -136,21 +136,22 @@ func snapshotsEqual(a, b []store.SnapshotEntry) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	index := func(es []store.SnapshotEntry) map[string]store.SnapshotEntry {
-		m := make(map[string]store.SnapshotEntry, len(es))
-		for _, e := range es {
-			m[e.Key] = e
+	index := func(es []store.SnapshotEntry) map[string]*store.SnapshotEntry {
+		m := make(map[string]*store.SnapshotEntry, len(es))
+		for i := range es {
+			m[es[i].Key] = &es[i]
 		}
 		return m
 	}
 	ma, mb := index(a), index(b)
-	for k, ea := range ma {
+	for k := range ma {
 		eb, ok := mb[k]
 		if !ok {
 			return false
 		}
-		ea.ExpireAt, eb.ExpireAt = ea.ExpireAt.UTC(), eb.ExpireAt.UTC()
-		if !reflect.DeepEqual(ea, eb) {
+		ca, cb := *ma[k], *eb
+		ca.ExpireAt, cb.ExpireAt = ca.ExpireAt.UTC(), cb.ExpireAt.UTC()
+		if !reflect.DeepEqual(ca, cb) {
 			return false
 		}
 	}
