@@ -412,7 +412,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M15 | Hardening: protected mode + atomic keyspace ops | ✅ | [#33](https://github.com/prajwalmahajan101/toykv/pull/33) | `m15` |
 | M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ✅ | [#35](https://github.com/prajwalmahajan101/toykv/pull/35) | `m16` |
 | M17 | Bench + polish + v2.0.0 | ✅ | [#36](https://github.com/prajwalmahajan101/toykv/pull/36) | `v2.0.0` |
-| M18 | Raft embedding + single-node replicated path | 📋 Planned | — | `m18` |
+| M18 | Raft embedding + single-node replicated path | ✅ | [#43](https://github.com/prajwalmahajan101/toykv/pull/43) | `m18` |
 | M19 | Multi-node replication + leader election | 📋 Planned | — | `m19` |
 | M20 | Client routing: write redirect + read model | 📋 Planned | — | `m20` |
 | M21 | `WAIT` + INFO replication + cluster observability | 📋 Planned | — | `m21` |
