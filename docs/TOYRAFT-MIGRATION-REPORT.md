@@ -264,7 +264,49 @@ M19 arc.
 
 ## M20 — Client routing: write redirect + read model
 
-_Pending._
+_Complete. Client-side routing built entirely on `LeaderHint()`, `Status().Role`,
+and the `ErrNotLeader` a follower `Propose` already returns — no new ToyRaft
+surface was needed. Findings below._
+
+### ✅ `LeaderHint()` / `ErrNotLeader` are sufficient to build redirect — **confirmed**
+
+M20's redirect contract needed exactly two reads from ToyRaft: which node is the
+leader (`LeaderHint() NodeID` on a follower, `Status().Role == Leader` on the
+leader) and the rejection that carries the hint (`*raft.ErrNotLeader` from a
+follower `Propose`, already surfaced by the M19 propose gate). Both behaved as
+documented across a 3-node cluster — a client hitting any node completes every
+write via redirect, and leader-routed reads are consistent. No 🐞, no new API.
+
+### 🧭 API friction — `LeaderHint()` returns a `NodeID`, not an address the consumer can act on *(low)*
+
+Expected and reasonable — ToyRaft addresses the consensus plane by `NodeID` and
+has no notion of a *client-facing* address (that is the embedder's concern). But
+it means the consumer must maintain its own `NodeID → clientAddr` map to turn a
+hint into something a client can dial; ToyRaft's own `PeerURLs` map is
+raft-transport addresses, which are deliberately a different port. toykv resolved
+this by extending its `-peers` grammar with an optional client-address suffix and
+building the map in `cluster.Node`. **Not a defect** — recorded only so a future
+embedder expects to own address translation. No change requested of ToyRaft.
+
+### 🧭 API friction — election timing not surfaced through the toykv config seam *(low, self-inflicted)*
+
+Not a ToyRaft issue: `raft.Config` already exposes `ElectionTimeout{Min,Max}` and
+`HeartbeatInterval` with a clean zero-value default (`applyDefaults`). The friction
+was on *toykv's* side — `cluster.Config`/`server.Config` had not plumbed them
+through, so the M20 routing harness (which needs a stable leader under `-race`,
+exactly as M19.3 found) could not widen the window without bypassing
+`cluster.New`. Fixed in toykv by pass-through fields (zero → ToyRaft default).
+Noted here because it reconfirms ToyRaft's zero-value defaulting is the right
+shape for an embedder — the fix was purely additive and needed no ToyRaft change.
+
+### Net for M20
+
+The clean result: an entire client-routing layer (write redirect + a
+linearizable-by-default read model with a `READONLY` opt-in) was built without a
+single new ToyRaft API or a single 🐞. The M18–M19 arc surfaced real friction on
+transport/storage constructibility; M20 surfaced none on the consensus API
+itself — `LeaderHint`/`Role`/`ErrNotLeader` are exactly the primitives a
+redirect layer needs, and they held.
 
 ## M21 — WAIT + INFO replication + cluster observability
 
