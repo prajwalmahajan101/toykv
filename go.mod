@@ -3,11 +3,12 @@ module github.com/prajwalmahajan101/toykv
 go 1.26.3
 
 require (
+	github.com/anishathalye/porcupine v1.0.3
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260615092313-b57e5e6d29bb
-	github.com/prajwalmahajan101/toyraft v1.0.0-rc.1
+	github.com/prajwalmahajan101/toyraft v1.0.0-rc.2
 	github.com/redis/go-redis/v9 v9.20.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.19.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.69.0
