@@ -111,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer) (code int) {
 		}
 	}()
 
-	c, err := client.DialTimeout(*addr, *timeout)
+	c, err := client.DialClusterTimeout(*addr, *timeout)
 	if err != nil {
 		fmt.Fprintf(stderr, "toykv-tui: dial %s: %v\n", *addr, err)
 		logger.Error("dial failed", "addr", *addr, "err", err.Error())
