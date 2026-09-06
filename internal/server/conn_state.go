@@ -35,6 +35,12 @@ type connState struct {
 	// mutate→appendIfLive path fires exactly once inside Apply. Only ever set
 	// on synthetic connStates, never on a live client connection.
 	applying bool
+	// readonly opts this connection into follower-local reads (M20). Default
+	// false: keyspace reads on a non-leader redirect to the leader (linearizable).
+	// READONLY sets it so a follower serves reads from local, possibly stale,
+	// state; READWRITE clears it. Meaningful only under -replicate; harmless
+	// otherwise. Per-connection, so it dies with the connection.
+	readonly bool
 }
 
 // context returns the connection's telemetry context, defaulting to

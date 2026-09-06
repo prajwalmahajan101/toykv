@@ -67,6 +67,13 @@ type Config struct {
 	// required for a multi-node cluster. Both ignored in standalone mode.
 	RaftAddr string
 	RaftDir  string
+	// ElectionTimeoutMin/Max and HeartbeatInterval tune Raft timing (multi-node
+	// only). Zero passes through to ToyRaft's defaults, so unset preserves M19
+	// behaviour; the routing/linearizability harnesses widen them to steady the
+	// leader under -race. Ignored in standalone mode.
+	ElectionTimeoutMin time.Duration
+	ElectionTimeoutMax time.Duration
+	HeartbeatInterval  time.Duration
 }
 
 // Server is the TCP listener and command dispatcher.
@@ -200,13 +207,16 @@ func New(cfg Config) (*Server, error) {
 			nodeID = "n1"
 		}
 		node, err := cluster.New(cluster.Config{
-			NodeID:   nodeID,
-			Peers:    cfg.Peers,
-			RaftAddr: cfg.RaftAddr,
-			RaftDir:  cfg.RaftDir,
-			Apply:    s.applyReplicated,
-			Snapshot: s.store.Snapshot,
-			Logger:   s.log,
+			NodeID:             nodeID,
+			Peers:              cfg.Peers,
+			RaftAddr:           cfg.RaftAddr,
+			RaftDir:            cfg.RaftDir,
+			Apply:              s.applyReplicated,
+			Snapshot:           s.store.Snapshot,
+			Logger:             s.log,
+			ElectionTimeoutMin: cfg.ElectionTimeoutMin,
+			ElectionTimeoutMax: cfg.ElectionTimeoutMax,
+			HeartbeatInterval:  cfg.HeartbeatInterval,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("server: build cluster node: %w", err)
