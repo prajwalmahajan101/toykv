@@ -66,7 +66,8 @@ func DialClusterTimeout(addr string, timeout time.Duration) (*ClusterClient, err
 		maxRedirects: defaultMaxRedirects,
 		backoffBase:  defaultBackoffBase,
 		backoffMax:   defaultBackoffMax,
-		rng:          rand.New(rand.NewSource(time.Now().UnixNano())),
+		//nolint:gosec // G404: backoff jitter only decorrelates concurrent retries; not security-sensitive.
+		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}, nil
 }
 
