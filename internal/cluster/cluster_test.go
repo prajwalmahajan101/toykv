@@ -56,6 +56,13 @@ func newTestCluster(t *testing.T, n int) *testCluster {
 			RaftDir:  t.TempDir(),
 			Apply:    storeApply(s),
 			Snapshot: func() []store.SnapshotEntry { return s.Snapshot() },
+			// Generous election/heartbeat timings (as newStableCluster uses) keep
+			// the leader from churning mid-Propose on slow CI runners under -race —
+			// the happy-path replication tests assert convergence, not election
+			// speed. Reuses the M19.3 stable-harness constants.
+			ElectionTimeoutMin: linElectionMin,
+			ElectionTimeoutMax: linElectionMax,
+			HeartbeatInterval:  linHeartbeat,
 		})
 		if err != nil {
 			t.Fatalf("New(%s): %v", ids[i], err)
