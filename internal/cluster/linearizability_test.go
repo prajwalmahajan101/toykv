@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/anishathalye/porcupine"
 	"github.com/prajwalmahajan101/toyraft/pkg/raft"
+	"github.com/prajwalmahajan101/toyraft/pkg/storage/memory"
+	httptransport "github.com/prajwalmahajan101/toyraft/pkg/transport/http"
 
 	"github.com/prajwalmahajan101/toykv/internal/store"
 )
@@ -74,9 +77,22 @@ const (
 	linAttempts = 8 // stable-leader windows to try before giving up
 )
 
+// Generous consensus timeouts for the linearizability cluster. The M19.1/M19.2
+// harnesses use ToyRaft's aggressive defaults (150–300ms election, 50ms
+// heartbeat), which churn leadership constantly under -race on a loaded CI
+// runner — fine for tests that tolerate/expect failover, fatal for one that
+// needs a *stable* leader. A 2–4s election window with a 300ms heartbeat
+// (300*3 ≤ 2000, satisfying ToyRaft's HeartbeatInterval*3 ≤ ElectionTimeoutMin
+// invariant) lets the leader ride out -race scheduling hiccups.
+const (
+	linElectionMin = 2 * time.Second
+	linElectionMax = 4 * time.Second
+	linHeartbeat   = 300 * time.Millisecond
+)
+
 func checkLinearizable(t *testing.T, n int) {
 	t.Helper()
-	tc := newTestCluster(t, n)
+	tc := newStableCluster(t, n)
 
 	// M19.3 scope is happy-path concurrency with a *stable* leader: leader-local
 	// GETs are only linearizable while one node stays leader (ToyRaft v1 has no
@@ -213,6 +229,90 @@ func recordStableWindow(t *testing.T, tc *testCluster) (history []porcupine.Oper
 		history = append(history, ops...)
 	}
 	return history, true
+}
+
+// newStableCluster stands up an n-node cluster over the real HTTP transport,
+// mirroring newTestCluster (cluster_test.go) but with generous election/heartbeat
+// timeouts so one node holds leadership for the whole test even under -race. Nodes
+// are built directly (in-package) to inject the tuned raft.Config; an in-memory
+// Raft log is sufficient (no restart/recovery is exercised here).
+func newStableCluster(t *testing.T, n int) *testCluster {
+	t.Helper()
+
+	names := []string{"n1", "n2", "n3", "n4", "n5"}
+	ids := make([]raft.NodeID, n)
+	addrs := make([]string, n)
+	for i := range n {
+		ids[i] = raft.NodeID(names[i])
+		addrs[i] = freeAddr(t) // defined in cluster_test.go
+	}
+	allIDs := append([]raft.NodeID(nil), ids...)
+
+	tc := &testCluster{ids: ids}
+	for i := range n {
+		peerURLs := make(map[raft.NodeID]string, n-1)
+		for j := range n {
+			if j != i {
+				peerURLs[ids[j]] = "http://" + addrs[j]
+			}
+		}
+		httpT, err := httptransport.New(httptransport.Config{
+			NodeID:      ids[i],
+			ListenAddr:  addrs[i],
+			PeerURLs:    peerURLs,
+			SendTimeout: peerSendTimeout,
+			Backoff: httptransport.BackoffConfig{
+				Base:        peerBackoffBase,
+				Factor:      peerBackoffFactor,
+				MaxAttempts: peerBackoffAttempts,
+			},
+			ShutdownTimeout: peerShutdownTimeout,
+		})
+		if err != nil {
+			t.Fatalf("httptransport.New(%s): %v", ids[i], err)
+		}
+
+		s := store.New()
+		sm := NewStateMachine(storeApply(s), func() []store.SnapshotEntry { return s.Snapshot() })
+		rn, err := raft.New(raft.Config{
+			NodeID:             ids[i],
+			Peers:              allIDs,
+			Storage:            memory.New(),
+			Transport:          httpT,
+			StateMachine:       sm,
+			ElectionTimeoutMin: linElectionMin,
+			ElectionTimeoutMax: linElectionMax,
+			HeartbeatInterval:  linHeartbeat,
+		})
+		if err != nil {
+			_ = httpT.Close()
+			t.Fatalf("raft.New(%s): %v", ids[i], err)
+		}
+		tc.nodes = append(tc.nodes, &Node{raft: rn, sm: sm, closers: []io.Closer{httpT}})
+		tc.stores = append(tc.stores, s)
+	}
+
+	for i, node := range tc.nodes {
+		if err := node.Start(context.Background()); err != nil {
+			t.Fatalf("Start(%s): %v", ids[i], err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, node := range tc.nodes {
+			_ = node.Stop()
+		}
+	})
+
+	// A larger election window means a slower first election — wait generously.
+	for i, node := range tc.nodes {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := node.WaitLeader(ctx); err != nil {
+			cancel()
+			t.Fatalf("WaitLeader(%s): %v", ids[i], err)
+		}
+		cancel()
+	}
+	return tc
 }
 
 // readRegister reads the current integer value of key "x" from a store; an absent
