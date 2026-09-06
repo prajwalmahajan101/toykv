@@ -26,6 +26,7 @@ These will be created as the corresponding milestones complete. **Numbers are re
 | 0017 | OpenTelemetry signal model & OTLP export → LGTM | After M16 lands | M16 |
 | 0018 | Raft embedding, command envelope & StateMachine seam | After M18 lands | M18 |
 | 0019 | Cluster mode — HTTP peer transport & file-backed Raft log | After M19.1 lands | M19 |
+| 0020 | Write redirection & cluster read consistency | After M20 lands | M20 |
 
 *(Numbers track chronological landing order. TTL slotted in at 0004 when M4 closed and BGREWRITEAOF took 0005 when M5 closed — each was a real architectural decision worth recording; TUI bumped from 0004 → 0005 → 0006. 0008 and 0009 followed M6 and M7. 0010 lands with M9 because the release artefact policy — channels, archive shape, checksum surface — closes off real alternatives that the v2 roadmap may want to revisit.)*
 

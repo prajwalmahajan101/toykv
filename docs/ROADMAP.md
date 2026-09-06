@@ -282,8 +282,8 @@ Numbering continues the single sequence (**M18–M23**); the release tag is `v3.
 | mutate→propose→apply→AOF ordering & crash durability through the new path | **Critical** | M18 — durability suite with the SM in the loop |
 | Acked-write loss across leader failover / partition heal | **Critical** | M19 — kill-leader + partition linearizability test |
 | Split-brain / double-leader | High | M19 — same |
-| A write reaching a follower silently dropped | High | M20 — redirect test |
-| Stale/torn reads violating the chosen read model | Medium | M20 — read-model test |
+| A write reaching a follower silently dropped | High | ✅ M20 — `NOTLEADER host:port` redirect + `routing_test.go` (write via every node) |
+| Stale/torn reads violating the chosen read model | Medium | ✅ M20 — leader-routed keyed reads by default; `READONLY` opt-in; `routing_test.go` read-model assertions |
 | `WAIT` over-reporting acks (a durability lie) | Medium | M21 — ack-truth test vs a slow/partitioned follower |
 | Raft peer transport is unauthenticated (ToyRaft threat model: trusted network only) | High (documented) | M23 — security note + bind guard |
 
@@ -318,12 +318,14 @@ M19 is the largest, highest-blast-radius milestone in v3 (the distributed core: 
 - Porcupine harness driving concurrent `SET`/`GET`/`INCR` against an in-process cluster (real HTTP transport, so `-race` covers the whole consensus+apply path); a single-integer-register model checks the recorded call/return history. Happy-path concurrency, stable leader — failover correctness is M19.2's; failover-linearizability needs M20's client redirect and is deferred to a post-M20 item.
 - **Exit:** linearizability harness green under `-race` across N = 3/5.
 
-### M20 — Client routing: write redirect + read model
-**Branch:** `feat/cluster-routing` · **Depends on:** M19 · **ADR:** 0020 — write redirection & cluster read consistency
-- Follower write → leader-hint redirect error (`-MOVED`-style / `-ERR NOTLEADER host:port`). `internal/client` (CLI **and** TUI) auto-retry against the hint with bounded backoff.
-- Reads: leader by default (follower reads redirect); **`READONLY`** opt-in lets a follower serve stale local reads (documented non-linearizable).
-- **Owned risk test:** a client hitting a random node completes every write via redirect and reads consistently from the leader; `READONLY` reads return follower-local state; redirect storms during an election converge under bounded retry.
-- **Exit:** any-node client completes all writes; leader/replica read model behaves as specified; CLI/TUI follow redirects transparently.
+### M20 — Client routing: write redirect + read model ✅
+**Branch:** `feat/cluster-routing` · **Depends on:** M19 · **ADR:** [0020](./adr/0020-write-redirection-and-cluster-read-consistency.md) — write redirection & cluster read consistency
+- Follower write → `-NOTLEADER host:port` redirect (the token after `NOTLEADER` is a dialable client address when the leader advertised one, else operator-readable text). `ClusterClient` (CLI **and** TUI, via the injectable `Doer`) auto-retries against the hint with bounded backoff+jitter; a leaderless window re-polls in place so a transient election converges. ✅
+- Client addresses ride the `-peers` grammar as an optional `id@host:raftport/host:clientport` suffix (M19 configs still parse). ✅
+- Reads: leader by default (follower keyed-reads redirect); **`READONLY`**/`READWRITE` per-connection opt-in lets a follower serve stale local reads (documented non-linearizable). ✅
+- **Owned risk test:** `internal/server/routing_test.go` — a `ClusterClient` hitting each of a 3-node cluster completes every write via redirect and reads consistently from the leader; a `READONLY` connection returns follower-local state while a `READWRITE` read on the same follower redirects; `internal/client` covers dialable-storm termination and leaderless-window recovery under the retry cap. All `-race`. ✅
+- **Exit:** any-node client completes all writes; leader/replica read model behaves as specified; CLI/TUI follow redirects transparently. ✅
+- **Supporting change:** `cluster.Config`/`server.Config` expose pass-through `ElectionTimeout{Min,Max}` + `HeartbeatInterval` (zero → ToyRaft defaults, so M19 behaviour is unchanged) so the routing harness holds a stable leader under `-race`.
 
 ### M21 — `WAIT` + INFO replication + cluster observability
 **Branch:** `feat/wait-info-repl` · **Depends on:** M19 (reads `Status().MatchIndex`) · **ADR:** 0021 — replication acknowledgement & telemetry model
@@ -429,7 +431,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M19.1 | Cluster wiring + multi-node happy path | ✅ | _feat/cluster_ | `m19.1` |
 | M19.2 | Failover + partition correctness | ✅ | _feat/cluster_ | `m19.2` |
 | M19.3 | Linearizability harness | ✅ | _feat/cluster_ | `m19.3` |
-| M20 | Client routing: write redirect + read model | 📋 Planned | — | `m20` |
+| M20 | Client routing: write redirect + read model | ✅ | _feat/cluster-routing_ | `m20` |
 | M21 | `WAIT` + INFO replication + cluster observability | 📋 Planned | — | `m21` |
 | M22 | TUI v3: cluster view | 📋 Planned | — | `m22` |
 | M23 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
