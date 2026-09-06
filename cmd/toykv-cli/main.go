@@ -66,7 +66,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitFatal
 	}
 
-	cli, err := client.DialTimeout(*addr, *timeout)
+	cli, err := client.DialClusterTimeout(*addr, *timeout)
 	if err != nil {
 		fmt.Fprintf(stderr, "toykv-cli: dial %s: %v\n", *addr, err)
 		return exitFatal
@@ -88,7 +88,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // doOneShot sends a single command and exits with the appropriate code.
-func doOneShot(cli *client.Client, pr *respfmt.Printer, argv []string) int {
+func doOneShot(cli *client.ClusterClient, pr *respfmt.Printer, argv []string) int {
 	v, err := cli.Do(argv...)
 	if err != nil {
 		fmt.Fprintf(pr.Err, "toykv-cli: %v\n", err)
@@ -102,7 +102,7 @@ func doOneShot(cli *client.Client, pr *respfmt.Printer, argv []string) int {
 }
 
 // doREPL drives an interactive prompt until EOF / quit / exit.
-func doREPL(cli *client.Client, pr *respfmt.Printer, stdin io.Reader, stdout io.Writer, addr string) int {
+func doREPL(cli *client.ClusterClient, pr *respfmt.Printer, stdin io.Reader, stdout io.Writer, addr string) int {
 	br := bufio.NewReader(stdin)
 	prompt := fmt.Sprintf("toykv:%s> ", addr)
 	for {
@@ -141,7 +141,7 @@ func doREPL(cli *client.Client, pr *respfmt.Printer, stdin io.Reader, stdout io.
 }
 
 // doPiped reads commands one per line from stdin until EOF.
-func doPiped(cli *client.Client, pr *respfmt.Printer, stdin io.Reader) int {
+func doPiped(cli *client.ClusterClient, pr *respfmt.Printer, stdin io.Reader) int {
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	last := exitOK
@@ -167,7 +167,7 @@ func doPiped(cli *client.Client, pr *respfmt.Printer, stdin io.Reader) int {
 // dispatchLine tokenises a line and sends it; returns the reply's exit
 // code. Parse errors do not kill REPL/piped sessions (they print and
 // return exitErr); transport errors return exitFatal.
-func dispatchLine(cli *client.Client, pr *respfmt.Printer, line string) int {
+func dispatchLine(cli *client.ClusterClient, pr *respfmt.Printer, line string) int {
 	argv, err := cmdparse.Tokenise(line)
 	if err != nil {
 		fmt.Fprintf(pr.Err, "(error) parse: %v\n", err)

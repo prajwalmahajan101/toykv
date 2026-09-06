@@ -37,7 +37,10 @@ flags:
   -protected-mode string  refuse a non-loopback bind without auth/TLS: yes|no (default "yes")
   -replicate           enable the Raft-replicated command path (default false)
   -node-id     string  Raft node id; used only with -replicate (default "n1")
-  -peers       string  cluster membership 'id@host:raftport,...' incl self; empty = single-node
+  -peers       string  cluster membership 'id@host:raftport[/host:clientport],...' incl self; empty = single-node.
+                       The optional '/host:clientport' advertises a member's client address so followers
+                       can emit a dialable NOTLEADER redirect (M20); omit it and that member is not a
+                       redirect target.
   -raft-addr   string  this node's peer-transport bind; defaults to the self entry in -peers
   -raft-dir    string  directory for the file-backed Raft log; required for a multi-node cluster
   -otel-endpoint    string  OTLP collector endpoint host:port ("" disables all telemetry)
@@ -62,7 +65,7 @@ func main() {
 
 		replicate = flag.Bool("replicate", false, "enable the Raft-replicated command path")
 		nodeID    = flag.String("node-id", "n1", "Raft node id; used only with -replicate")
-		peers     = flag.String("peers", "", "cluster membership 'id@host:raftport,...' incl self; empty = single-node")
+		peers     = flag.String("peers", "", "cluster membership 'id@host:raftport[/host:clientport],...' incl self; empty = single-node")
 		raftAddr  = flag.String("raft-addr", "", "this node's peer-transport bind; defaults to the self entry in -peers")
 		raftDir   = flag.String("raft-dir", "", "directory for the file-backed Raft log; required for a multi-node cluster")
 
