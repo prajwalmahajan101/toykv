@@ -50,6 +50,15 @@ type Config struct {
 	Apply    ApplyFunc
 	Snapshot func() []store.SnapshotEntry
 	Logger   *slog.Logger
+
+	// Election/heartbeat timing (multi-node only). Zero values are passed through
+	// to ToyRaft, which applies its LLD defaults (150ms/300ms election, 50ms
+	// heartbeat) — so leaving these unset preserves M19 behaviour exactly.
+	// Operators (and the linearizability/routing harnesses) widen them to damp
+	// leader churn under load or the race detector.
+	ElectionTimeoutMin time.Duration
+	ElectionTimeoutMax time.Duration
+	HeartbeatInterval  time.Duration
 }
 
 // Node wraps a raft.Node plus the toykv StateMachine, exposing the
@@ -60,6 +69,13 @@ type Node struct {
 	raft    raft.Node
 	sm      *StateMachine
 	closers []io.Closer // transport, storage — closed (in order) after raft.Stop
+
+	// clientAddrs maps each member's node id to its advertised client-facing
+	// address (the "/host:clientport" suffix of -peers). It lets a follower turn
+	// a LeaderHint node id into a dialable redirect target (M20). A member that
+	// did not advertise a client addr is absent; single-node clusters, which
+	// never redirect, leave this nil.
+	clientAddrs map[raft.NodeID]string
 }
 
 // New builds a cluster node from cfg. The node is not started — call Start.
@@ -75,10 +91,36 @@ type Node struct {
 func New(cfg Config) (*Node, error) {
 	sm := NewStateMachine(cfg.Apply, cfg.Snapshot)
 
+	var (
+		node *Node
+		err  error
+	)
 	if len(cfg.Peers) <= 1 {
-		return newSingleNode(cfg, sm)
+		node, err = newSingleNode(cfg, sm)
+	} else {
+		node, err = newMultiNode(cfg, sm)
 	}
-	return newMultiNode(cfg, sm)
+	if err != nil {
+		return nil, err
+	}
+	node.clientAddrs = clientAddrMap(cfg.Peers)
+	return node, nil
+}
+
+// clientAddrMap indexes advertised client addresses by node id. Members without
+// a "/host:clientport" suffix are omitted, so a lookup miss means "not an
+// auto-redirect target". Returns nil for a single-member (or nil) membership.
+func clientAddrMap(peers []Peer) map[raft.NodeID]string {
+	if len(peers) <= 1 {
+		return nil
+	}
+	m := make(map[raft.NodeID]string, len(peers))
+	for _, p := range peers {
+		if p.ClientAddr != "" {
+			m[p.ID] = p.ClientAddr
+		}
+	}
+	return m
 }
 
 func newSingleNode(cfg Config, sm *StateMachine) (*Node, error) {
@@ -147,12 +189,15 @@ func newMultiNode(cfg Config, sm *StateMachine) (*Node, error) {
 	}
 
 	rn, err := raft.New(raft.Config{
-		NodeID:       selfID,
-		Peers:        allIDs,
-		Storage:      storage,
-		Transport:    transport,
-		StateMachine: sm,
-		Logger:       cfg.Logger,
+		NodeID:             selfID,
+		Peers:              allIDs,
+		Storage:            storage,
+		Transport:          transport,
+		StateMachine:       sm,
+		Logger:             cfg.Logger,
+		ElectionTimeoutMin: cfg.ElectionTimeoutMin,
+		ElectionTimeoutMax: cfg.ElectionTimeoutMax,
+		HeartbeatInterval:  cfg.HeartbeatInterval,
 	})
 	if err != nil {
 		_ = transport.Close()
@@ -198,6 +243,19 @@ func (n *Node) Role() raft.Role { return n.raft.Status().Role }
 
 // LeaderHint returns the best-known current leader id, or "" if unknown.
 func (n *Node) LeaderHint() raft.NodeID { return n.raft.LeaderHint() }
+
+// LeaderClientAddr resolves the current leader to its advertised client-facing
+// address for a NOTLEADER redirect (M20). It returns "" when there is no known
+// leader or the leader did not advertise a client address (an un-migrated
+// -peers entry) — the caller then falls back to a non-dialable, operator-
+// readable hint rather than a redirect.
+func (n *Node) LeaderClientAddr() string {
+	hint := n.raft.LeaderHint()
+	if hint == "" {
+		return ""
+	}
+	return n.clientAddrs[hint]
+}
 
 // Status exposes the full ToyRaft status (role, term, indices, per-replica
 // match) for cluster observability (M21).
