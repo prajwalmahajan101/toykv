@@ -300,10 +300,23 @@ Numbering continues the single sequence (**M18–M23**); the release tag is `v3.
 
 ### M19 — Multi-node replication + leader election *(the distributed core)*
 **Branch:** `feat/cluster` · **Depends on:** M18 · **ADR:** 0019 — cluster mode, transport & raft-log storage layout
+
+M19 is the largest, highest-blast-radius milestone in v3 (the distributed core: real transport, election, failover, and the linearizability proof). It ships as **three risk-ordered PRs on `feat/cluster`** so the hardest correctness work is provable as early as possible and each part is independently reviewable. One ADR (0019) covers the layout, written after M19.1 lands and amended if 19.2/.3 surface a new contract.
+
+#### M19.1 — Cluster wiring + multi-node happy path
 - `-replicate -peers <id@host:raftport,…> -raft-addr -raft-dir`. Wire ToyRaft `pkg/transport/http` (peer port distinct from the client port) + `pkg/storage/file` for the Raft log.
-- N-node cluster (odd N ≥ 3); role tracking; `LeaderHint()` surfaced. Standalone mode unchanged.
-- **Owned risk test:** 3-node cluster — a leader-acked write appears on all followers; **kill the leader → new leader elected → no acked write lost**; partition heal reconciles divergent tails. Plus a **linearizability harness** on `SET`/`GET`/`INCR` (ToyRaft's Porcupine harness or a go-redis-driven recorder), run under `-race`.
-- **Exit:** 3-node cluster replicates all writes; survives leader kill + partition with zero acked-write loss; linearizability harness green.
+- N-node cluster (odd N ≥ 3); role tracking; `Role()`/`LeaderHint()`/`Status()` surfaced; `WaitLeader` waits for a leader to *exist* (followers no longer block on self-leadership). A follower write returns `NOTLEADER <hint>` (redirect is M20). Standalone + single-node paths unchanged.
+- **Owned risk test:** in-process 3-node cluster over the real HTTP transport — a leader-acked write converges on **all** followers; a follower `Propose` returns `ErrNotLeader` with a hint. Run under `-race`. *No* failure injection here.
+- **Exit:** 3-node cluster replicates every write on the happy path; single-node `-replicate` byte-identical to M18; standalone byte-identical to v2.
+- **Dogfood:** required ToyRaft `v1.0.0-rc.2` — `pkg/transport/http` was not externally constructible at rc.1 (`Config.Clock` on `internal/clock`, nil rejected); fixed upstream (nil-default in `http.New`).
+
+#### M19.2 — Failover + partition correctness
+- **Owned risk test:** kill the leader → new leader elected → **no acked write lost**; partition → heal → divergent-tail reconciliation; split-brain / double-leader guard. In-process harness over a `chaosTransport` that wraps the real `pkg/transport/http` and drops messages by partition cut (a subprocess `kill -9` can't inject a partition; ToyRaft's `inproc.Hub` isn't externally constructible at rc.2 — see ADR-0019 amendment + MIGRATION-REPORT).
+- **Exit:** survives leader kill + partition with zero acked-write loss.
+
+#### M19.3 — Linearizability harness
+- Porcupine harness driving concurrent `SET`/`GET`/`INCR` against an in-process cluster (real HTTP transport, so `-race` covers the whole consensus+apply path); a single-integer-register model checks the recorded call/return history. Happy-path concurrency, stable leader — failover correctness is M19.2's; failover-linearizability needs M20's client redirect and is deferred to a post-M20 item.
+- **Exit:** linearizability harness green under `-race` across N = 3/5.
 
 ### M20 — Client routing: write redirect + read model
 **Branch:** `feat/cluster-routing` · **Depends on:** M19 · **ADR:** 0020 — write redirection & cluster read consistency
@@ -413,7 +426,9 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M16 | Observability: OpenTelemetry (logs/metrics/traces) → LGTM | ✅ | [#35](https://github.com/prajwalmahajan101/toykv/pull/35) | `m16` |
 | M17 | Bench + polish + v2.0.0 | ✅ | [#36](https://github.com/prajwalmahajan101/toykv/pull/36) | `v2.0.0` |
 | M18 | Raft embedding + single-node replicated path | ✅ | [#43](https://github.com/prajwalmahajan101/toykv/pull/43) | `m18` |
-| M19 | Multi-node replication + leader election | 📋 Planned | — | `m19` |
+| M19.1 | Cluster wiring + multi-node happy path | ✅ | _feat/cluster_ | `m19.1` |
+| M19.2 | Failover + partition correctness | ✅ | _feat/cluster_ | `m19.2` |
+| M19.3 | Linearizability harness | ✅ | _feat/cluster_ | `m19.3` |
 | M20 | Client routing: write redirect + read model | 📋 Planned | — | `m20` |
 | M21 | `WAIT` + INFO replication + cluster observability | 📋 Planned | — | `m21` |
 | M22 | TUI v3: cluster view | 📋 Planned | — | `m22` |

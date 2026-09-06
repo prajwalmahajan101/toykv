@@ -135,8 +135,132 @@ layer, which is the cheapest kind to fix.
 
 ## M19 — Multi-node replication + leader election
 
-_To be appended when M19 integrates the HTTP transport, file storage, and
-election against a real 3-node cluster._
+_Complete. M19.1 (cluster wiring + happy path) integrated `pkg/transport/http` +
+`pkg/storage/file` against a real in-process 3-node cluster; M19.2 (failover +
+partition correctness) injected network faults via a chaos-wrapped transport; M19.3
+(linearizability) checked concurrent histories with Porcupine at N = 3/5. Findings
+below, closed by [Net for M19](#net-for-m19)._
+
+### 🐞 `pkg/transport/http` was not constructible by an external module — **high**
+
+**Contract.** The LLD marks `pkg/transport/http` as a **Stable** public package —
+a consumer is expected to `http.New(http.Config{…})` to get a `raft.Transport`.
+
+**What we hit.** `http.Config.Clock` is typed `internal/clock.Clock`, and
+`Config.Validate()` **hard-rejected a nil Clock** (`config.go:67`). An external
+module cannot satisfy it: there is no public constructor for a clock, and the
+interface can't be implemented from outside because its methods return the
+un-nameable `internal/clock.Timer`/`Ticker`. So the one transport a real cluster
+needs could not be built by a real consumer — the exact thing the `v1.0.0`
+dogfood gate exists to catch. (M18 foreshadowed this for `pkg/transport/inproc`;
+M19 confirmed it on the load-bearing path.)
+
+**Repro (from toykv, at rc.1).**
+```go
+_, err := http.New(http.Config{
+    NodeID: "n1", ListenAddr: ":7001",
+    PeerURLs: map[raft.NodeID]string{"n2": "http://127.0.0.1:7002"},
+    // Clock: ??? — cannot construct internal/clock.Clock from outside the module
+})
+// err: "http.Config: Clock must be non-nil (use internal/clock.Real)"
+```
+
+**Fix delivered (ToyRaft `v1.0.0-rc.2`).** `http.New` now defaults a nil `Clock`
+to `clock.NewReal()` before `Validate()` — parity with what `raft.Config`
+already did (`config.go:134`). Non-breaking (nil newly *permitted*, type
+unchanged), landed with ADR-0023 + a nil-clock construction test. toykv builds
+against `rc.2` and leaves `Clock` unset. **This is the first concrete `rc.1 →
+rc.2` outcome of the mutual unblock.**
+
+**Suggestion for `v1.0.0`.** Consider the same nil-default on
+`inproc.HubConfig.Clock` to close the class entirely, and/or extract the narrow
+public `pkg/raft.Clock` the `internal/clock` doc already anticipates (phase-5) so
+external consumers can inject a fake clock for their own deterministic tests.
+
+### ✅ `pkg/storage/file` — constructs and replays cleanly — **confirmed**
+
+`file.New(dir)` is a plain public constructor; no internal-type barrier. Wired as
+each node's Raft-log store with a per-node `-raft-dir`; the 3-node happy-path test
+runs green under `-race` with no storage-layer friction.
+
+### ✅ HTTP transport (post-rc.2) — election + replication work first try — **confirmed**
+
+Once constructible, `pkg/transport/http` needed no further coaxing: three
+in-process nodes on localhost ports elect a leader and replicate a mutating
+command stream to all followers, with `Status().Role`/`LeaderHint()` and
+`ErrNotLeader` (on a follower `Propose`) behaving exactly as documented. No 🐞 in
+the consensus/transport path — only the constructibility blocker above.
+
+### 🧭 `pkg/transport/inproc` still not externally constructible at rc.2 — blocked failover-test plan *(medium)*
+
+_M19.2 (failover + partition correctness)._
+
+The M18/M19 suggestion (nil-default `inproc.HubConfig.Clock`, mirroring the
+`http.New` rc.2 fix) was **not** applied to `inproc` — `NewHub` still hard-rejects a
+nil `Clock`, and `HubConfig.Clock` is still typed on the un-importable
+`internal/clock`. M19.2 planned to reuse the Hub's `Partition`/`Heal` chaos knobs
+(the exact surface ToyRaft's own `figure8_test.go` uses) to prove failover and
+partition correctness — but a consumer still cannot build a Hub, so that plan was
+blocked at the same wall as M19.1's http transport, one release later.
+
+**Workaround (shipped).** toykv wrote a ~40-line `chaosTransport` that *wraps the
+real `pkg/transport/http`* and drops messages crossing a partition cut (outbound in
+`Send`, inbound in the registered `step`), toggled by a shared `partitionState`.
+This tests partitions over the **production** transport — arguably better than
+inproc — at the cost of the seeded delivery determinism inproc would have given.
+See toykv `internal/cluster/failover_test.go`.
+
+**Confirmed correctness under real partitions.** With chaos injection, ToyRaft held
+every failover guarantee: leader-kill loses no acked write (the REPL-06 current-term
+commit rule flushes the acked prior-term prefix once the new leader commits in its
+term — exactly as `commit.go` documents); a partitioned minority leader cannot
+advance `CommitIndex`; on heal the minority's uncommitted tail is discarded and the
+cluster reconciles to the majority history; and no two leaders ever share a term
+(the isolated stale leader keeps `Leader` at its old term, never the new one).
+
+**Request for `v1.0.0` (restated, now higher priority).** Nil-default
+`inproc.HubConfig.Clock` and/or expose the narrow public `pkg/raft.Clock` so
+consumers can drive deterministic failure tests with the shipped chaos surface
+instead of re-implementing one. The chaos knobs (`Partition`/`Heal`/`DropRate`/
+`Delay`/`Reorder`) are genuinely valuable to a consumer — they are just unreachable.
+
+### ✅ Replicated register is linearizable under concurrent load — **confirmed**
+
+_M19.3 (linearizability harness)._
+
+A Porcupine harness drove 4 concurrent clients issuing `SET`/`GET`/`INCR` against a
+running in-process cluster (real HTTP transport; writes via `Node.Propose`, reads
+from the leader's applied state) and checked the recorded call/return history
+against a single-integer-register model. The history is **linearizable under `-race`
+at N = 3 and N = 5** — the strongest correctness statement in the M19 series. The
+harness needs **nothing from ToyRaft beyond the existing `Propose`/`Status`
+surface**; no new friction. Combined with M19.2's failover proof, this closes the
+distributed-core dogfooding: ToyRaft's consensus behaves correctly under
+concurrency, failover, and partition when embedded by a real consumer.
+
+### Net for M19
+
+The distributed core is done, and the split between where ToyRaft *shone* and where it
+*chafed* is now unambiguous. **The consensus core was flawless** under the hardest tests
+toykv can throw at it: leader election and replication first-try (M19.1); no acked-write
+loss across leader kill, correct divergent-tail discard on partition-heal, and a clean
+per-term split-brain guard (M19.2); and a linearizable register under concurrent load at
+N = 3 and N = 5 (M19.3) — all under `-race`. Two behaviours that first looked like bugs
+were ToyRaft being *correct*: the REPL-06 current-term commit rule (a new leader flushes
+the acked prior-term prefix only once it commits in its own term) and an isolated leader
+retaining `Leader` at its stale term — both documented invariants the tests had to be
+written *around*, not against.
+
+**All friction was at the embedding-ergonomics layer, and it clustered on one root cause:**
+the `internal/clock`-typed, required, externally-un-constructible `Clock`. It surfaced three
+times on an escalating path — `inproc.Hub` (M18, worked around), `pkg/transport/http` (M19.1,
+*fixed* in rc.2), and `inproc.Hub` again (M19.2, still unfixed, forcing the `chaosTransport`
+workaround over the real HTTP transport). **The single highest-value `v1.0.0` action from
+this integration:** generalize the rc.2 nil-Clock default to `inproc.HubConfig.Clock`, and/or
+expose the narrow public `pkg/raft.Clock` the `internal/clock` docs already anticipate — this
+closes the entire class and unlocks the shipped chaos surface (`Partition`/`Heal`/`DropRate`/
+`Delay`/`Reorder`) for every external consumer. No 🐞 correctness defects across the whole
+M19 arc.
 
 ## M20 — Client routing: write redirect + read model
 
