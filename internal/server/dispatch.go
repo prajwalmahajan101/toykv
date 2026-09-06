@@ -24,6 +24,13 @@ type handler struct {
 	// through Raft instead of run locally (see dispatch's propose gate); it is
 	// ignored in standalone mode. Read and local-admin commands are false.
 	mutating bool
+	// readKeyed marks commands that read replicated keyspace state (GET, SCAN,
+	// HGETALL, …) as opposed to local-admin reads (PING, INFO, HELLO). Under
+	// -replicate a readKeyed command on a non-leader is redirected to the leader
+	// so reads are linearizable by default; a connection that opted into READONLY
+	// serves it from local (possibly stale) state instead. Ignored in standalone
+	// mode. mutating and readKeyed are mutually exclusive.
+	readKeyed bool
 }
 
 // commands is the dispatch table. M1 ships PING + ECHO; M2 adds the
@@ -34,16 +41,16 @@ var commands = map[string]handler{
 	"AUTH":      {fn: cmdAuth, minArgs: 2, maxArgs: 3},
 	"PING":      {fn: cmdPing, minArgs: 1, maxArgs: 2},
 	"ECHO":      {fn: cmdEcho, minArgs: 2, maxArgs: 2},
-	"GET":       {fn: cmdGet, minArgs: 2, maxArgs: 2},
+	"GET":       {fn: cmdGet, minArgs: 2, maxArgs: 2, readKeyed: true},
 	"SET":       {fn: cmdSet, minArgs: 3, maxArgs: -1, mutating: true},
 	"DEL":       {fn: cmdDel, minArgs: 2, maxArgs: -1, mutating: true},
-	"EXISTS":    {fn: cmdExists, minArgs: 2, maxArgs: -1},
+	"EXISTS":    {fn: cmdExists, minArgs: 2, maxArgs: -1, readKeyed: true},
 	"INCR":      {fn: cmdIncr, minArgs: 2, maxArgs: 2, mutating: true},
 	"DECR":      {fn: cmdDecr, minArgs: 2, maxArgs: 2, mutating: true},
-	"KEYS":      {fn: cmdKeys, minArgs: 2, maxArgs: 2},
-	"SCAN":      {fn: cmdScan, minArgs: 2, maxArgs: 6},
+	"KEYS":      {fn: cmdKeys, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"SCAN":      {fn: cmdScan, minArgs: 2, maxArgs: 6, readKeyed: true},
 	"FLUSHDB":   {fn: cmdFlushDB, minArgs: 1, maxArgs: 1, mutating: true},
-	"DBSIZE":    {fn: cmdDBSize, minArgs: 1, maxArgs: 1},
+	"DBSIZE":    {fn: cmdDBSize, minArgs: 1, maxArgs: 1, readKeyed: true},
 	"RENAME":    {fn: cmdRename, minArgs: 3, maxArgs: 3, mutating: true},
 	"RENAMENX":  {fn: cmdRenameNX, minArgs: 3, maxArgs: 3, mutating: true},
 	"COPY":      {fn: cmdCopy, minArgs: 3, maxArgs: 6, mutating: true},
@@ -51,32 +58,37 @@ var commands = map[string]handler{
 	"EXPIRE":    {fn: cmdExpire, minArgs: 3, maxArgs: 3, mutating: true},
 	"PEXPIRE":   {fn: cmdPExpire, minArgs: 3, maxArgs: 3, mutating: true},
 	"PEXPIREAT": {fn: cmdPExpireAt, minArgs: 3, maxArgs: 3, mutating: true},
-	"TTL":       {fn: cmdTTL, minArgs: 2, maxArgs: 2},
-	"PTTL":      {fn: cmdPTTL, minArgs: 2, maxArgs: 2},
+	"TTL":       {fn: cmdTTL, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"PTTL":      {fn: cmdPTTL, minArgs: 2, maxArgs: 2, readKeyed: true},
 	"PERSIST":   {fn: cmdPersist, minArgs: 2, maxArgs: 2, mutating: true},
 
 	"BGREWRITEAOF": {fn: cmdBGRewriteAOF, minArgs: 1, maxArgs: 1},
+
+	// Cluster read model (M20): opt a connection into (READONLY) / out of
+	// (READWRITE) follower-local stale reads. Local-admin, never replicated.
+	"READONLY":  {fn: cmdReadOnly, minArgs: 1, maxArgs: 1},
+	"READWRITE": {fn: cmdReadWrite, minArgs: 1, maxArgs: 1},
 
 	// Lists (M11).
 	"LPUSH":  {fn: cmdLPush, minArgs: 3, maxArgs: -1, mutating: true},
 	"RPUSH":  {fn: cmdRPush, minArgs: 3, maxArgs: -1, mutating: true},
 	"LPOP":   {fn: cmdLPop, minArgs: 2, maxArgs: 2, mutating: true},
 	"RPOP":   {fn: cmdRPop, minArgs: 2, maxArgs: 2, mutating: true},
-	"LLEN":   {fn: cmdLLen, minArgs: 2, maxArgs: 2},
-	"LRANGE": {fn: cmdLRange, minArgs: 4, maxArgs: 4},
-	"LINDEX": {fn: cmdLIndex, minArgs: 3, maxArgs: 3},
+	"LLEN":   {fn: cmdLLen, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"LRANGE": {fn: cmdLRange, minArgs: 4, maxArgs: 4, readKeyed: true},
+	"LINDEX": {fn: cmdLIndex, minArgs: 3, maxArgs: 3, readKeyed: true},
 
 	// Hashes + TYPE (M11). HSET's pair validation (even field/value
 	// count) lives in the handler — arity bounds can't express it.
 	"HSET":    {fn: cmdHSet, minArgs: 4, maxArgs: -1, mutating: true},
-	"HGET":    {fn: cmdHGet, minArgs: 3, maxArgs: 3},
+	"HGET":    {fn: cmdHGet, minArgs: 3, maxArgs: 3, readKeyed: true},
 	"HDEL":    {fn: cmdHDel, minArgs: 3, maxArgs: -1, mutating: true},
-	"HEXISTS": {fn: cmdHExists, minArgs: 3, maxArgs: 3},
-	"HKEYS":   {fn: cmdHKeys, minArgs: 2, maxArgs: 2},
-	"HVALS":   {fn: cmdHVals, minArgs: 2, maxArgs: 2},
-	"HLEN":    {fn: cmdHLen, minArgs: 2, maxArgs: 2},
-	"HGETALL": {fn: cmdHGetAll, minArgs: 2, maxArgs: 2},
-	"TYPE":    {fn: cmdType, minArgs: 2, maxArgs: 2},
+	"HEXISTS": {fn: cmdHExists, minArgs: 3, maxArgs: 3, readKeyed: true},
+	"HKEYS":   {fn: cmdHKeys, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"HVALS":   {fn: cmdHVals, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"HLEN":    {fn: cmdHLen, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"HGETALL": {fn: cmdHGetAll, minArgs: 2, maxArgs: 2, readKeyed: true},
+	"TYPE":    {fn: cmdType, minArgs: 2, maxArgs: 2, readKeyed: true},
 }
 
 // dispatch routes argv to its handler, validating the command exists
@@ -114,21 +126,41 @@ func (s *Server) dispatch(cs *connState, argv [][]byte) resp.Value {
 		reply, err := s.cluster.Propose(cs.context(), argv)
 		if err != nil {
 			// On a follower, ToyRaft rejects the proposal with ErrNotLeader
-			// carrying the leader hint. Surface it as a NOTLEADER error so an
-			// operator (and, in M20, the client's auto-redirect) can find the
+			// carrying the leader hint. Surface it as a NOTLEADER redirect so an
+			// operator — and the client's auto-redirect (M20) — can reach the
 			// leader. Any other propose error is an infrastructure failure
 			// (node stopping, proposal dropped mid-commit).
 			if notLeader, ok := errors.AsType[*raft.ErrNotLeader](err); ok {
-				if hint := notLeader.LeaderHint; hint != "" {
-					return resp.Error(fmt.Sprintf("NOTLEADER leader is %s", hint))
-				}
-				return resp.Error("NOTLEADER no leader elected")
+				return s.notLeaderReply(notLeader.LeaderHint)
 			}
 			return resp.Error(fmt.Sprintf("ERR replication failed: %s", err))
 		}
 		return reply
 	}
+	// Cluster read model (M20): a keyspace read on a non-leader is redirected to
+	// the leader so reads are linearizable by default. A connection that issued
+	// READONLY (cs.readonly) opts out and serves the read from local — possibly
+	// stale — state instead. cs.applying reads (none today, but the Apply path is
+	// leader-agnostic) and standalone mode always run locally.
+	if s.replicated && h.readKeyed && !cs.applying && !cs.readonly && s.cluster.Role() != raft.Leader {
+		return s.notLeaderReply(s.cluster.LeaderHint())
+	}
 	return h.fn(s, cs, argv)
+}
+
+// notLeaderReply formats the NOTLEADER error. When the leader advertised a
+// client address the reply is "-NOTLEADER host:port", a machine-parseable
+// redirect the client follows automatically; otherwise it falls back to an
+// operator-readable, non-dialable hint (an un-migrated -peers entry, or no
+// leader yet). hint is ToyRaft's leader node id, used only for the fallback text.
+func (s *Server) notLeaderReply(hint raft.NodeID) resp.Value {
+	if addr := s.cluster.LeaderClientAddr(); addr != "" {
+		return resp.Error("NOTLEADER " + addr)
+	}
+	if hint != "" {
+		return resp.Error(fmt.Sprintf("NOTLEADER leader is %s (no client address advertised)", hint))
+	}
+	return resp.Error("NOTLEADER no leader elected")
 }
 
 // upperASCII returns an upper-case copy of b. Command names are
