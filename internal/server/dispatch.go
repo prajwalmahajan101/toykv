@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+
+	"github.com/prajwalmahajan101/toyraft/pkg/raft"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 )
@@ -110,10 +113,17 @@ func (s *Server) dispatch(cs *connState, argv [][]byte) resp.Value {
 		argv = s.resolveNondeterministic(argv)
 		reply, err := s.cluster.Propose(cs.context(), argv)
 		if err != nil {
-			// M18 single-node: this node is always the leader after startup, so
-			// a propose error is an infrastructure failure (node stopping,
-			// proposal dropped), not a routing case. Multi-node leader-hint
-			// redirect is M20.
+			// On a follower, ToyRaft rejects the proposal with ErrNotLeader
+			// carrying the leader hint. Surface it as a NOTLEADER error so an
+			// operator (and, in M20, the client's auto-redirect) can find the
+			// leader. Any other propose error is an infrastructure failure
+			// (node stopping, proposal dropped mid-commit).
+			if notLeader, ok := errors.AsType[*raft.ErrNotLeader](err); ok {
+				if hint := notLeader.LeaderHint; hint != "" {
+					return resp.Error(fmt.Sprintf("NOTLEADER leader is %s", hint))
+				}
+				return resp.Error("NOTLEADER no leader elected")
+			}
 			return resp.Error(fmt.Sprintf("ERR replication failed: %s", err))
 		}
 		return reply

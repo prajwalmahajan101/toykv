@@ -16,7 +16,7 @@ import (
 // integer, RPUSH's length) that ToyRaft's Propose would otherwise discard.
 func TestNodeLifecycleProposeReturnsReply(t *testing.T) {
 	s := store.New()
-	n, err := New("n1", storeApply(s), func() []store.SnapshotEntry { return s.Snapshot() }, nil)
+	n, err := New(Config{NodeID: "n1", Apply: storeApply(s), Snapshot: func() []store.SnapshotEntry { return s.Snapshot() }})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

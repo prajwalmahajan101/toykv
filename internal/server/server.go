@@ -56,9 +56,17 @@ type Config struct {
 	// commands flow through Propose→Apply; reads and local-admin stay local.
 	Replicate bool
 	// NodeID is this node's Raft identifier; defaults to "n1" when Replicate is
-	// set and this is empty. Ignored in standalone mode. Multi-node peers
-	// (-peers) arrive in M19.
+	// set and this is empty. Ignored in standalone mode.
 	NodeID string
+	// Peers is the full cluster membership (self included) parsed from -peers.
+	// Empty or single-member selects the M18 single-node path; a larger, odd
+	// membership wires the real multi-node cluster (M19). Ignored in standalone.
+	Peers []cluster.Peer
+	// RaftAddr is this node's peer-transport listen bind; defaults to the self
+	// peer's address from Peers. RaftDir is the file-backed Raft log directory,
+	// required for a multi-node cluster. Both ignored in standalone mode.
+	RaftAddr string
+	RaftDir  string
 }
 
 // Server is the TCP listener and command dispatcher.
@@ -191,13 +199,21 @@ func New(cfg Config) (*Server, error) {
 		if nodeID == "" {
 			nodeID = "n1"
 		}
-		node, err := cluster.New(nodeID, s.applyReplicated, s.store.Snapshot, s.log)
+		node, err := cluster.New(cluster.Config{
+			NodeID:   nodeID,
+			Peers:    cfg.Peers,
+			RaftAddr: cfg.RaftAddr,
+			RaftDir:  cfg.RaftDir,
+			Apply:    s.applyReplicated,
+			Snapshot: s.store.Snapshot,
+			Logger:   s.log,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("server: build cluster node: %w", err)
 		}
 		s.cluster = node
 		s.replicated = true
-		s.log.Info("replication enabled", "node_id", nodeID)
+		s.log.Info("replication enabled", "node_id", nodeID, "peers", len(cfg.Peers))
 	}
 	if err := s.registerObservableGauges(); err != nil {
 		s.log.Warn("telemetry: observable gauge registration failed", "err", err)

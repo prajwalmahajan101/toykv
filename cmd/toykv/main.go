@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/prajwalmahajan101/toykv/internal/aof"
+	"github.com/prajwalmahajan101/toykv/internal/cluster"
 	"github.com/prajwalmahajan101/toykv/internal/server"
 	"github.com/prajwalmahajan101/toykv/internal/store"
 	"github.com/prajwalmahajan101/toykv/internal/telemetry"
@@ -34,8 +35,11 @@ flags:
   -tls-cert    string  path to the TLS certificate (PEM); requires -tls-key
   -tls-key     string  path to the TLS private key (PEM); requires -tls-cert
   -protected-mode string  refuse a non-loopback bind without auth/TLS: yes|no (default "yes")
-  -replicate           enable the Raft-replicated command path (M18 single-node) (default false)
+  -replicate           enable the Raft-replicated command path (default false)
   -node-id     string  Raft node id; used only with -replicate (default "n1")
+  -peers       string  cluster membership 'id@host:raftport,...' incl self; empty = single-node
+  -raft-addr   string  this node's peer-transport bind; defaults to the self entry in -peers
+  -raft-dir    string  directory for the file-backed Raft log; required for a multi-node cluster
   -otel-endpoint    string  OTLP collector endpoint host:port ("" disables all telemetry)
   -otel-protocol    string  OTLP transport: grpc|http (default "grpc")
   -otel-service-name string service.name reported to telemetry (default "toykv")
@@ -56,8 +60,11 @@ func main() {
 		tlsKey      = flag.String("tls-key", "", "path to the TLS private key (PEM); requires -tls-cert")
 		protected   = flag.String("protected-mode", "yes", "refuse a non-loopback bind without auth/TLS: yes|no")
 
-		replicate = flag.Bool("replicate", false, "enable the Raft-replicated command path (M18 single-node)")
+		replicate = flag.Bool("replicate", false, "enable the Raft-replicated command path")
 		nodeID    = flag.String("node-id", "n1", "Raft node id; used only with -replicate")
+		peers     = flag.String("peers", "", "cluster membership 'id@host:raftport,...' incl self; empty = single-node")
+		raftAddr  = flag.String("raft-addr", "", "this node's peer-transport bind; defaults to the self entry in -peers")
+		raftDir   = flag.String("raft-dir", "", "directory for the file-backed Raft log; required for a multi-node cluster")
 
 		otelEndpoint    = flag.String("otel-endpoint", "", "OTLP collector endpoint host:port; \"\" disables telemetry")
 		otelProtocol    = flag.String("otel-protocol", "grpc", "OTLP transport: grpc|http")
@@ -81,6 +88,15 @@ func main() {
 	}
 
 	tlsConf, err := buildTLSConfig(*tlsCert, *tlsKey)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	// Parse the cluster membership up front so a malformed -peers is a usage
+	// error (exit 2) surfaced before any server work. An empty -peers yields a
+	// nil slice → the single-node path.
+	peerList, err := cluster.ParsePeers(*peers)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -140,6 +156,9 @@ func main() {
 		Telemetry:     providers,
 		Replicate:     *replicate,
 		NodeID:        *nodeID,
+		Peers:         peerList,
+		RaftAddr:      *raftAddr,
+		RaftDir:       *raftDir,
 	})
 	if err != nil {
 		log.Error("server init failed", "err", err)
