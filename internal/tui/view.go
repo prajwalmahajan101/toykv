@@ -52,11 +52,27 @@ func (m Model) View() string {
 	}
 
 	var body string
-	if m.showHelp {
+	switch {
+	case m.showHelp:
 		body = renderHelp(m.st, m.width, bodyH)
-	} else if m.breakpoint() == LayoutStack {
+	case m.breakpoint() == LayoutStack:
 		body = m.renderStacked(m.width, bodyH)
-	} else {
+	case m.breakpoint() == LayoutNarrow && m.clusterVisible():
+		// Narrow keeps the two-pane row 50/50; the cluster pane drops to a
+		// short strip underneath.
+		topH := bodyH - clusterStripH
+		top := lipgloss.JoinHorizontal(lipgloss.Top,
+			m.renderLeft(m.leftWidth(), topH),
+			m.renderRight(m.rightWidth(), topH))
+		body = lipgloss.JoinVertical(lipgloss.Left, top, m.renderCluster(m.width, clusterStripH))
+	case m.clusterVisible():
+		// Wide / Mid: cluster as a third fixed-width column; the value pane
+		// yields the width.
+		cw := clusterColWidth
+		left := m.renderLeft(m.leftWidth(), bodyH)
+		right := m.renderRight(m.width-m.leftWidth()-cw, bodyH)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right, m.renderCluster(cw, bodyH))
+	default:
 		left := m.renderLeft(m.leftWidth(), bodyH)
 		right := m.renderRight(m.rightWidth(), bodyH)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
@@ -83,6 +99,56 @@ func (m Model) leftWidth() int {
 }
 
 func (m Model) rightWidth() int { return m.width - m.leftWidth() }
+
+// clusterColWidth is the fixed column width the cluster pane occupies in the
+// Wide/Mid side-by-side layout; clusterStripH is its fixed height when it
+// drops to a strip (Narrow) or a stacked section (Stack).
+const (
+	clusterColWidth = 30
+	clusterStripH   = 8
+)
+
+// clusterVisible reports whether the cluster pane should render — true only
+// when the server reported a replication role (role:"" ⇒ standalone, pane
+// hidden, layout byte-identical to v2).
+func (m Model) clusterVisible() bool { return m.repl.role != "" }
+
+// renderCluster draws the # Replication pane (bordered, never focus-target).
+// Leader: role + master_repl_offset + one entry per replica (addr, then
+// state/offset/lag, lag highlighted when non-zero). Follower: role + offset.
+func (m Model) renderCluster(w, h int) string {
+	roleStyle := m.st.accent
+	if m.repl.role != "master" {
+		roleStyle = m.st.warn
+	}
+
+	var b strings.Builder
+	b.WriteString(m.st.keyName.Render("cluster"))
+	b.WriteString("\n")
+	b.WriteString(m.st.muted.Render(strings.Repeat("─", maxInt(0, w-4))))
+	b.WriteString("\n")
+	b.WriteString(m.st.statusKey.Render("role   ") + roleStyle.Render(m.repl.role))
+	b.WriteString("\n")
+	b.WriteString(m.st.statusKey.Render("offset ") + m.st.statusVal.Render(fmt.Sprintf("%d", m.repl.off)))
+	b.WriteString("\n")
+
+	if m.repl.role == "master" {
+		b.WriteString("\n")
+		b.WriteString(m.st.statusKey.Render(fmt.Sprintf("slaves (%d)", len(m.repl.peers))))
+		b.WriteString("\n")
+		for _, p := range m.repl.peers {
+			b.WriteString(m.st.statusVal.Render(truncate(p.addr, w-4)))
+			b.WriteString("\n")
+			lagStyle := m.st.muted
+			if p.lag > 0 {
+				lagStyle = m.st.warn
+			}
+			b.WriteString("  " + lagStyle.Render(fmt.Sprintf("%s o=%d l=%d", p.state, p.off, p.lag)))
+			b.WriteString("\n")
+		}
+	}
+	return m.pane(b.String(), w, h, false)
+}
 
 // fsyncDisplay is the fsync label the status bar shows: the -fsync
 // override when set, else the live appendfsync from INFO.
@@ -387,8 +453,18 @@ func (m Model) renderHash(v resp.Value) string {
 	return b.String()
 }
 
-// renderStacked draws list-above-value for narrow terminals.
+// renderStacked draws list-above-value for narrow terminals, plus a third
+// stacked cluster section when replication is active.
 func (m Model) renderStacked(w, totalH int) string {
+	if m.clusterVisible() {
+		rest := totalH - clusterStripH
+		listH := rest * 6 / 10
+		valH := rest - listH
+		return lipgloss.JoinVertical(lipgloss.Left,
+			m.renderLeft(w, listH),
+			m.renderRight(w, valH),
+			m.renderCluster(w, clusterStripH))
+	}
 	listH := totalH * 6 / 10
 	valH := totalH - listH
 	left := m.renderLeft(w, listH)
