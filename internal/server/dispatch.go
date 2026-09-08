@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/prajwalmahajan101/toyraft/pkg/raft"
 
 	"github.com/prajwalmahajan101/toykv/internal/resp"
@@ -127,8 +130,15 @@ func (s *Server) dispatch(cs *connState, argv [][]byte) resp.Value {
 	// so its behaviour is byte-identical to v2.
 	if s.replicated && h.mutating && !cs.applying {
 		argv = s.resolveNondeterministic(argv)
-		reply, err := s.cluster.Propose(cs.context(), argv)
+		// raft.propose span (M21, ADR-0021 §OTel): child of the command span;
+		// captures end-to-end propose→commit→apply latency as seen by the server.
+		// Propose is the slow path so per-call attribute construction is acceptable.
+		proposeCtx, proposeSpan := s.tel.Tracer.Start(cs.context(), "raft.propose")
+		proposeSpan.SetAttributes(attribute.String("command", name))
+		reply, err := s.cluster.Propose(proposeCtx, argv)
 		if err != nil {
+			proposeSpan.SetStatus(codes.Error, err.Error())
+			proposeSpan.End()
 			// On a follower, ToyRaft rejects the proposal with ErrNotLeader
 			// carrying the leader hint. Surface it as a NOTLEADER redirect so an
 			// operator — and the client's auto-redirect (M20) — can reach the
@@ -139,6 +149,9 @@ func (s *Server) dispatch(cs *connState, argv [][]byte) resp.Value {
 			}
 			return resp.Error(fmt.Sprintf("ERR replication failed: %s", err))
 		}
+		st := s.cluster.Status()
+		proposeSpan.SetAttributes(attribute.Int64("raft.commit_index", int64(st.CommitIndex)))
+		proposeSpan.End()
 		return reply
 	}
 	// Cluster read model (M20): a keyspace read on a non-leader is redirected to
