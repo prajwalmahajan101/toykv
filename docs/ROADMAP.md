@@ -327,7 +327,7 @@ M19 is the largest, highest-blast-radius milestone in v3 (the distributed core: 
 - **Exit:** any-node client completes all writes; leader/replica read model behaves as specified; CLI/TUI follow redirects transparently. ✅
 - **Supporting change:** `cluster.Config`/`server.Config` expose pass-through `ElectionTimeout{Min,Max}` + `HeartbeatInterval` (zero → ToyRaft defaults, so M19 behaviour is unchanged) so the routing harness holds a stable leader under `-race`.
 
-### M21 — `WAIT` + INFO replication + cluster observability
+### M21 — `WAIT` + INFO replication + cluster observability ✅
 **Branch:** `feat/wait-info-repl` · **Depends on:** M19 (reads `Status().MatchIndex`) · **ADR:** 0021 — replication acknowledgement & telemetry model
 - `WAIT numreplicas timeout` — block until N replicas ack the write's index (driven by leader `MatchIndex`); truthful, never over-reports.
 - `INFO replication` section — role, leader addr, connected replicas, per-replica lag, commit/apply/log offsets.
@@ -432,7 +432,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M19.2 | Failover + partition correctness | ✅ | _feat/cluster_ | `m19.2` |
 | M19.3 | Linearizability harness | ✅ | _feat/cluster_ | `m19.3` |
 | M20 | Client routing: write redirect + read model | ✅ | _feat/cluster-routing_ | `m20` |
-| M21 | `WAIT` + INFO replication + cluster observability | 📋 Planned | — | `m21` |
+| M21 | `WAIT` + INFO replication + cluster observability | ✅ | _feat/wait-info-repl_ | `m21` |
 | M22 | TUI v3: cluster view | 📋 Planned | — | `m22` |
 | M23 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
 
