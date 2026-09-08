@@ -5,6 +5,9 @@ import (
 	"net"
 	"strings"
 
+	"github.com/prajwalmahajan101/toyraft/pkg/raft"
+
+	"github.com/prajwalmahajan101/toykv/internal/cluster"
 	"github.com/prajwalmahajan101/toykv/internal/resp"
 )
 
@@ -90,7 +93,71 @@ func cmdInfo(s *Server, _ *connState, argv [][]byte) resp.Value {
 		b.WriteString("\r\n")
 	}
 
+	if s.replicated && want("replication") {
+		s.infoReplication(&b)
+	}
+
 	return resp.Verbatim("txt", []byte(b.String()))
+}
+
+// infoReplication appends the # Replication section to b. Only called when
+// s.replicated is true. Fields mirror Redis's INFO replication output so that
+// redis-cli and go-redis parse them correctly.
+func (s *Server) infoReplication(b *strings.Builder) {
+	st := s.cluster.Status()
+
+	role := "slave"
+	if st.Role == raft.Leader {
+		role = "master"
+	}
+
+	fmt.Fprintf(b, "# Replication\r\n")
+	fmt.Fprintf(b, "role:%s\r\n", role)
+
+	if st.Role == raft.Leader {
+		// Per-replica info is only available on the leader (MatchIndex is nil on followers).
+		peers := replicaPeers(s.peers, s.cfg.NodeID)
+		fmt.Fprintf(b, "connected_slaves:%d\r\n", len(peers))
+		for i, p := range peers {
+			host, port := splitHostPort(p.ClientAddr)
+			offset := uint64(st.MatchIndex[p.ID])
+			lag := uint64(0)
+			if uint64(st.CommitIndex) > offset {
+				lag = uint64(st.CommitIndex) - offset
+			}
+			fmt.Fprintf(b, "slave%d:ip=%s,port=%s,state=online,offset=%d,lag=%d\r\n",
+				i, host, port, offset, lag)
+		}
+		fmt.Fprintf(b, "master_repl_offset:%d\r\n", uint64(st.CommitIndex))
+	} else {
+		fmt.Fprintf(b, "connected_slaves:0\r\n")
+		fmt.Fprintf(b, "master_repl_offset:%d\r\n", uint64(st.ApplyIndex))
+	}
+
+	b.WriteString("\r\n")
+}
+
+// replicaPeers returns the peers that are not this node (i.e., the replicas as
+// seen from the leader). Peers without a ClientAddr are included but will show
+// ip= and port= as empty strings, matching behaviour for un-migrated -peers entries.
+func replicaPeers(peers []cluster.Peer, selfID string) []cluster.Peer {
+	out := make([]cluster.Peer, 0, len(peers))
+	for _, p := range peers {
+		if string(p.ID) != selfID {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// splitHostPort splits a host:port string into its parts, returning empty
+// strings on parse failure (e.g. a peer with no advertised client address).
+func splitHostPort(addr string) (host, port string) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", ""
+	}
+	return host, port
 }
 
 // tcpPort returns the port the server is listening on, derived from the
