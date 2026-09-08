@@ -7,6 +7,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/prajwalmahajan101/toyraft/pkg/raft"
+
 	"github.com/prajwalmahajan101/toykv/internal/aof"
 )
 
@@ -78,6 +80,30 @@ func (s *Server) registerObservableGauges() error {
 			o.Observe(1, metric.WithAttributes(attribute.String("version", serverVersion)))
 			return nil
 		})
+
+	// Cluster observability (M21, ADR-0021): leader role and per-replica lag
+	// gauges. Registered only when replication is active; on no-op meter these
+	// are themselves no-ops. Callbacks take a single Status() snapshot — fast,
+	// non-blocking, copy-under-lock inside ToyRaft.
+	if s.replicated {
+		reg("toykv.raft.is_leader", "1 when this node is the Raft leader, else 0.", "",
+			func(_ context.Context, o metric.Int64Observer) error {
+				st := s.cluster.Status()
+				o.Observe(boolToInt64(st.Role == raft.Leader))
+				return nil
+			})
+
+		reg("toykv.raft.replication_lag", "Entries behind CommitIndex for each replica peer.", "",
+			func(_ context.Context, o metric.Int64Observer) error {
+				st := s.cluster.Status()
+				// MatchIndex is non-nil only on the leader; skip on followers.
+				for peerID, matchIdx := range st.MatchIndex {
+					lag := max(int64(st.CommitIndex)-int64(matchIdx), 0)
+					o.Observe(lag, metric.WithAttributes(attribute.String("peer", string(peerID))))
+				}
+				return nil
+			})
+	}
 
 	return errors.Join(errs...)
 }
