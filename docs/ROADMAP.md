@@ -335,11 +335,11 @@ M19 is the largest, highest-blast-radius milestone in v3 (the distributed core: 
 - **Owned risk test:** `WAIT N t` returns only once ≥N replicas truly hold the index (verified against a partitioned/slow follower it does **not** over-count); `INFO replication` fields match live cluster state.
 - **Exit:** `WAIT` matches Redis semantics; `INFO replication` accurate; raft signals visible in Grafana.
 
-### M22 — TUI v3: cluster view
-**Branch:** `feat/tui-v3` · **Depends on:** M20, M21 · **ADR:** *(none expected — consumes M20/M21; revisit only if a real contract emerges, per the M13/M14 precedent)*
-- Cluster pane: replicas, current leader, per-node role, lag, log offset (fed by `INFO replication`); AUTH + redirect-aware connect.
-- **Owned risk test:** `teatest` cluster-view smoke against a running 3-node cluster; a leader change is reflected in the view.
-- **Exit:** the TUI renders live cluster topology and follows leadership changes; all v2 keybindings still pass.
+### M22 — TUI v3: cluster view ✅
+**Branch:** `feat/tui-cluster-view` · **Depends on:** M20, M21 · **ADR:** *(none — consumes M20/M21; no new contract emerged, per the M13/M14 precedent)*
+- Cluster pane: per-node role, per-replica offset + lag, master_repl_offset (fed by `INFO replication`), rendered only when replicated. AUTH + redirect-aware connect were **already shipped** (M14 NOAUTH prompt, M20 `ClusterClient`) — M22 added only the view.
+- **Owned risk test:** synchronous `runMsg` + `View()` frame assertions (the suite's harness; teatest was unnecessary — `View()` is a pure function of model state). A `role:master` → `role:slave` poll flips the pane with no keypress; a body with no `role:` line renders the plain two-pane layout.
+- **Exit:** the TUI renders live cluster topology and follows leadership changes; standalone layout byte-identical to v2; all v2 keybindings still pass. ✅
 
 ### M23 — Bench + dogfood report + polish + v3.0.0
 **Branch:** `feat/release-v3` · **Depends on:** M18–M22 all merged
@@ -433,7 +433,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M19.3 | Linearizability harness | ✅ | _feat/cluster_ | `m19.3` |
 | M20 | Client routing: write redirect + read model | ✅ | _feat/cluster-routing_ | `m20` |
 | M21 | `WAIT` + INFO replication + cluster observability | ✅ | _feat/wait-info-repl_ | `m21` |
-| M22 | TUI v3: cluster view | 📋 Planned | — | `m22` |
+| M22 | TUI v3: cluster view | ✅ | _feat/tui-cluster-view_ | `m22` |
 | M23 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
 
 ## Changes from the previous roadmap

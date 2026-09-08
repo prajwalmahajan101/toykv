@@ -330,4 +330,13 @@ To exclude the leader's own ID from `MatchIndex` we needed the node's own `NodeI
 
 ## M22 — TUI v3: cluster view
 
-_Pending._
+### Net for M22
+
+**No new ToyRaft findings — clean.** M22 is a pure TUI consumer of the `INFO replication`
+output already shaped in M21. The cluster pane parses the `# Replication` section
+(`role`, `master_repl_offset`, `slaveN:` lines) the TUI already fetches each poll tick and
+renders it, flipping between leader and follower views when the polled role changes. No new
+`raft.Node`, `Status()`, or transport surface was touched, so no ToyRaft API friction, bugs,
+or docs gaps surfaced here. The M21 findings (leader self-ID in `MatchIndex`; no `NodeID()`
+on the `raft.Node` interface) stand as the replication-integration feedback; M22 adds
+nothing to them.
