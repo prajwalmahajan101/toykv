@@ -80,6 +80,10 @@ type Node struct {
 	// peers is the full membership as supplied at construction, exposed via
 	// Peers() for INFO replication output (M21). Immutable after New().
 	peers []Peer
+
+	// nodeID is this node's Raft ID, stored so NodeID() can return it
+	// without requiring a Status() call (M21: WAIT needs to exclude self).
+	nodeID raft.NodeID
 }
 
 // New builds a cluster node from cfg. The node is not started — call Start.
@@ -109,12 +113,16 @@ func New(cfg Config) (*Node, error) {
 	}
 	node.clientAddrs = clientAddrMap(cfg.Peers)
 	node.peers = cfg.Peers
+	node.nodeID = raft.NodeID(cfg.NodeID)
 	return node, nil
 }
 
 // Peers returns the full cluster membership as supplied at construction.
 // The slice is immutable; callers may read but must not modify it.
 func (n *Node) Peers() []Peer { return n.peers }
+
+// NodeID returns this node's Raft node identifier.
+func (n *Node) NodeID() raft.NodeID { return n.nodeID }
 
 // clientAddrMap indexes advertised client addresses by node id. Members without
 // a "/host:clientport" suffix are omitted, so a lookup miss means "not an

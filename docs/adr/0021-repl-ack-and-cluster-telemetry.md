@@ -21,6 +21,8 @@ At call time, snapshot `CommitIndex` from `cluster.Node.Status()` as the target.
 
 Using `CommitIndex` as the target is correct: it is the highest index that ToyRaft has replicated to a quorum. `MatchIndex[peer] >= CommitIndex` means the follower has durably accepted everything the leader considers committed. Any follower with a lower MatchIndex is behind and must not be counted for the requested ack threshold.
 
+ToyRaft includes the leader's own node ID in `MatchIndex` (`matchIndex[self] = idx`, `leader.go:116`) for its internal quorum accounting. Redis `WAIT` counts only *remote* replicas; the leader always holds the committed data. `countReplicas` therefore skips `matchIndex[selfID]` to match Redis semantics and avoid a systematic over-count of 1.
+
 ### INFO replication
 
 Appended as a `# Replication` section (gated on `s.replicated`). Fields:
