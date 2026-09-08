@@ -120,6 +120,9 @@ type Server struct {
 	// standalone mode.
 	replicated bool
 	cluster    *cluster.Node
+	// peers is the full cluster membership from Config.Peers, stored for
+	// INFO replication output (M21). Nil in standalone mode.
+	peers []cluster.Peer
 }
 
 // now returns the current time according to the configured clock. Used
@@ -223,6 +226,7 @@ func New(cfg Config) (*Server, error) {
 		}
 		s.cluster = node
 		s.replicated = true
+		s.peers = cfg.Peers
 		s.log.Info("replication enabled", "node_id", nodeID, "peers", len(cfg.Peers))
 	}
 	if err := s.registerObservableGauges(); err != nil {
