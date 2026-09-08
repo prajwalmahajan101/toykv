@@ -76,6 +76,10 @@ type Node struct {
 	// did not advertise a client addr is absent; single-node clusters, which
 	// never redirect, leave this nil.
 	clientAddrs map[raft.NodeID]string
+
+	// peers is the full membership as supplied at construction, exposed via
+	// Peers() for INFO replication output (M21). Immutable after New().
+	peers []Peer
 }
 
 // New builds a cluster node from cfg. The node is not started — call Start.
@@ -104,8 +108,13 @@ func New(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	node.clientAddrs = clientAddrMap(cfg.Peers)
+	node.peers = cfg.Peers
 	return node, nil
 }
+
+// Peers returns the full cluster membership as supplied at construction.
+// The slice is immutable; callers may read but must not modify it.
+func (n *Node) Peers() []Peer { return n.peers }
 
 // clientAddrMap indexes advertised client addresses by node id. Members without
 // a "/host:clientport" suffix are omitted, so a lookup miss means "not an
