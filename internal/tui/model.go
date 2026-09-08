@@ -121,7 +121,8 @@ type Model struct {
 	prompt  string // status message for input modes
 
 	status StatusLine
-	err    string // last-error banner; cleared on next successful reply
+	repl   replStatus // # Replication from INFO; role=="" ⇒ pane hidden
+	err    string     // last-error banner; cleared on next successful reply
 	width  int
 	height int
 
@@ -165,6 +166,9 @@ func (m Model) Mode() Mode { return m.mode }
 
 // Keys exposes the current key list (used by tests).
 func (m Model) Keys() []KeyInfo { return m.keys }
+
+// ClusterStatus exposes the parsed # Replication state (used by tests).
+func (m Model) ClusterStatus() replStatus { return m.repl }
 
 // LastErr exposes the current error banner (used by tests).
 func (m Model) LastErr() string { return m.err }
