@@ -106,6 +106,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status.Uptime = msg.info.uptime
 			m.status.Clients = msg.info.clients
 			m.status.FsyncLabel = msg.info.fsync
+			m.repl = msg.info.repl
 			if m.cursor >= len(m.keys) {
 				m.cursor = len(m.keys) - 1
 				if m.cursor < 0 {
