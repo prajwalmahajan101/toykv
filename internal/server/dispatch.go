@@ -69,6 +69,10 @@ var commands = map[string]handler{
 	"READONLY":  {fn: cmdReadOnly, minArgs: 1, maxArgs: 1},
 	"READWRITE": {fn: cmdReadWrite, minArgs: 1, maxArgs: 1},
 
+	// Replication acknowledgement (M21): block until N replicas ack the
+	// current commit index. Local-admin: not mutating, not readKeyed.
+	"WAIT": {fn: cmdWait, minArgs: 3, maxArgs: 3},
+
 	// Lists (M11).
 	"LPUSH":  {fn: cmdLPush, minArgs: 3, maxArgs: -1, mutating: true},
 	"RPUSH":  {fn: cmdRPush, minArgs: 3, maxArgs: -1, mutating: true},
