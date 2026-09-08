@@ -310,6 +310,13 @@ redirect layer needs, and they held.
 
 ## M21 — WAIT + INFO replication + cluster observability
 
+_Complete. Three surfaces built on `Status()` (`Role`, `MatchIndex`, `CommitIndex`,
+`ApplyIndex`) — the only ToyRaft reads M21 needed: `WAIT numreplicas timeout` (Redis-faithful
+durability ack driven by leader `MatchIndex`), the `INFO # Replication` section (role,
+per-replica offset/lag, `master_repl_offset`), and an OTel extension (`raft.propose` span +
+`toykv.raft.{is_leader,replication_lag}` gauges). One real footgun surfaced in `Status()`;
+findings below, closed by [Net for M21](#net-for-m21). Owns ADR-0021._
+
 ### 🐞 Bug discovery — `Status().MatchIndex` includes the leader's own node ID *(high, affects WAIT semantics)*
 
 **Observed:** `WAIT N timeout` systematically over-counted by 1. A 3-node cluster (leader + 2 followers) with one dead follower returned 2 instead of 1 for `WAIT 2 500`.
@@ -324,11 +331,32 @@ redirect layer needs, and they held.
 
 To exclude the leader's own ID from `MatchIndex` we needed the node's own `NodeID`. `raft.Node` does not expose a `NodeID()` method. We stored it ourselves in `cluster.Node` at construction time from `cfg.NodeID`. **Not a defect** — the ID is known at construction. Noted as a minor ergonomics gap: an embedder who stores only the `raft.Node` interface cannot recover its own ID without a side-channel. A zero-cost `NodeID() NodeID` on the interface would close the gap.
 
+### ✅ Confirmed — `Status()` exposes everything WAIT and INFO need
+
+- **`MatchIndex` drives a truthful `WAIT`.** Once the leader's own entry is excluded, the per-replica `MatchIndex` is an accurate acked-index-per-peer map: `WAIT N t` returns only when ≥N *remote* replicas truly hold the write's index, verified against a slow/partitioned follower where it provably does **not** over-count. The one caveat is the self-ID inclusion above, not the values themselves.
+- **`CommitIndex`/`ApplyIndex`/`Role` map cleanly onto Redis INFO fields.** `master_repl_offset` = leader `CommitIndex` (follower `ApplyIndex`); per-replica `lag` = `CommitIndex - MatchIndex[peer]`; `role` = `Role == Leader ? master : slave`. No derived state ToyRaft doesn't already expose, so `INFO replication` is redis-cli / go-redis compatible with no extra bookkeeping.
+- **`Status()` is cheap enough for a poll-rate observable.** The `is_leader`/`replication_lag` gauges read `Status()` on the OTel collection callback with no measurable hot-path cost — no internal lock contention observed under `-race`.
+
 ### Net for M21
 
 `WAIT` semantics match Redis faithfully, including the truthfulness invariant (never over-counts dead replicas — covered by an owned-risk test with a partition). `INFO replication` is redis-cli-compatible. Two OTel signals landed cleanly: `raft.propose` span (propose→apply wall-clock) and `toykv.raft.{is_leader,replication_lag}` gauges (observable, no hot-path cost). One real ToyRaft footgun discovered and fixed in toykv; one ergonomics note filed.
 
 ## M22 — TUI v3: cluster view
+
+_Complete. A pure presentation milestone: the TUI cluster pane renders the `INFO # Replication`
+body shaped in M21. It touches **no** ToyRaft surface at all — the model consumes the parsed
+`role`/`master_repl_offset`/`slaveN:` fields the TUI already polls, one layer above the
+consensus API. Recorded here for completeness of the M18–M22 arc; findings below._
+
+### ✅ Confirmed — M21's `INFO replication` output is a sufficient view contract
+
+The cluster view needed nothing from ToyRaft beyond what M21 already surfaced through `INFO`.
+The `# Replication` section carries a complete-enough topology for a live operator view — role,
+`master_repl_offset`, and one `slaveN:ip=…,port=…,state=…,offset=…,lag=…` line per replica —
+so the pane is a straight parse-and-render with no second round-trip and no new command. A
+leadership change is reflected purely by the next poll's `role:` flip; no push/subscribe
+surface was needed. This confirms the M21 `INFO` shape is the right consumer contract for
+cluster observability, not just redis-cli compatibility.
 
 ### Net for M22
 
@@ -340,3 +368,21 @@ renders it, flipping between leader and follower views when the polled role chan
 or docs gaps surfaced here. The M21 findings (leader self-ID in `MatchIndex`; no `NodeID()`
 on the `raft.Node` interface) stand as the replication-integration feedback; M22 adds
 nothing to them.
+
+---
+
+## Findings summary (M18–M22)
+
+| Milestone | 🐞 Bug | 🧭 Friction | 💡 / 📄 Requests | Status |
+|---|---|---|---|---|
+| M18 | — | Propose drops Apply result; inproc Clock un-constructible | result-on-Propose / accessor; public clock ctor | worked around |
+| M19 | — | `http.Config.Clock` un-constructible (**fixed rc.2**); inproc Clock still blocked | nil-default `inproc.HubConfig.Clock`; public `pkg/raft.Clock` | 1 fixed, 1 open |
+| M20 | — | `LeaderHint()` returns NodeID not addr (expected) | none | clean |
+| M21 | `Status().MatchIndex` includes leader self-ID | no `NodeID()` on `raft.Node` | doc `MatchIndex` self-ID / `ReplicaMatchIndex()`; `NodeID()` on interface | fixed in toykv |
+| M22 | — | — | — | clean |
+
+**Single highest-value `v1.0.0` action** (unchanged since M19): generalize the rc.2 nil-`Clock`
+default to `inproc.HubConfig.Clock` and/or expose the narrow public `pkg/raft.Clock` — closes the
+whole constructibility class and unlocks the shipped chaos surface. **Second:** document (or
+strip via `ReplicaMatchIndex()`) the leader self-ID in `Status().MatchIndex` — the one real
+footgun a `WAIT`-implementing embedder hits. No 🐞 correctness defects across the entire arc.
