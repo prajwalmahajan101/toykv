@@ -37,9 +37,14 @@ func cmdWait(s *Server, cs *connState, argv [][]byte) resp.Value {
 	}
 
 	target := st.CommitIndex
+	// ToyRaft includes the leader's own ID in MatchIndex (matchIndex[self] =
+	// leader's locally-replicated index, used for quorum counting). Redis WAIT
+	// counts only remote replicas, so exclude self. The leader is always ahead
+	// of its own CommitIndex, so excluding it never under-counts.
+	selfID := s.cluster.NodeID()
 
 	// Fast path: already satisfied (or asking for zero replicas).
-	if count := countReplicas(st.MatchIndex, target); count >= n {
+	if count := countReplicas(st.MatchIndex, target, selfID); count >= n {
 		return resp.Int(int64(count))
 	}
 
@@ -58,25 +63,26 @@ func cmdWait(s *Server, cs *connState, argv [][]byte) resp.Value {
 		select {
 		case <-ticker.C:
 			st = s.cluster.Status()
-			count := countReplicas(st.MatchIndex, target)
+			count := countReplicas(st.MatchIndex, target, selfID)
 			if count >= n {
 				return resp.Int(int64(count))
 			}
 		case <-deadline:
 			st = s.cluster.Status()
-			return resp.Int(int64(countReplicas(st.MatchIndex, target)))
+			return resp.Int(int64(countReplicas(st.MatchIndex, target, selfID)))
 		case <-cs.context().Done():
 			return resp.Error("ERR client disconnected")
 		}
 	}
 }
 
-// countReplicas counts how many entries in matchIndex are >= target. A nil
-// map (follower path, should not reach here normally) returns 0.
-func countReplicas(matchIndex map[raft.NodeID]raft.Index, target raft.Index) int {
+// countReplicas counts how many remote replicas in matchIndex have >= target.
+// selfID is excluded: ToyRaft includes the leader's own ID in MatchIndex for
+// quorum accounting, but Redis WAIT counts only remote followers.
+func countReplicas(matchIndex map[raft.NodeID]raft.Index, target raft.Index, selfID raft.NodeID) int {
 	count := 0
-	for _, idx := range matchIndex {
-		if idx >= target {
+	for id, idx := range matchIndex {
+		if id != selfID && idx >= target {
 			count++
 		}
 	}
