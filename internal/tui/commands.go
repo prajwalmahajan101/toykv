@@ -22,6 +22,24 @@ type infoStatus struct {
 	fsync   string
 	uptime  int64
 	clients int64
+	repl    replStatus // # Replication section; zero value ⇒ standalone
+}
+
+// replPeer is one replica row from a leader's INFO (the slaveN: lines).
+type replPeer struct {
+	addr  string // "ip:port"
+	state string // "online"
+	off   int64  // offset
+	lag   int64
+}
+
+// replStatus is the parsed # Replication section. role == "" means the
+// server is not replicated (no role: line in the body) — the cluster pane
+// is hidden entirely in that case.
+type replStatus struct {
+	role  string     // "master" | "slave" | "" (standalone)
+	off   int64      // master_repl_offset
+	peers []replPeer // leader-only
 }
 
 // fetchRefresh runs one SCAN page (cursor/count/match) + per-key TYPE and
@@ -219,9 +237,53 @@ func parseInfo(body string) infoStatus {
 				rest = rest[:i]
 			}
 			s.dbsize = atoi64(rest)
+		case strings.HasPrefix(line, "role:"):
+			s.repl.role = strings.TrimPrefix(line, "role:")
+		case strings.HasPrefix(line, "master_repl_offset:"):
+			s.repl.off = atoi64(strings.TrimPrefix(line, "master_repl_offset:"))
+		case strings.HasPrefix(line, "slave") && strings.IndexByte(line, ':') > 5:
+			// slaveN:ip=…,port=…,state=…,offset=…,lag=… — only the leader
+			// emits these. The N ordinal is ignored; the ip:port is the label.
+			if p, ok := parseSlaveLine(line); ok {
+				s.repl.peers = append(s.repl.peers, p)
+			}
 		}
 	}
 	return s
+}
+
+// parseSlaveLine parses one "slaveN:ip=…,port=…,state=…,offset=…,lag=…" line
+// into a replPeer. Returns ok=false if the line has no colon or no ip field.
+func parseSlaveLine(line string) (replPeer, bool) {
+	_, fields, ok := strings.Cut(line, ":")
+	if !ok {
+		return replPeer{}, false
+	}
+	var p replPeer
+	var ip, port string
+	for _, kv := range strings.Split(fields, ",") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "ip":
+			ip = v
+		case "port":
+			port = v
+		case "state":
+			p.state = v
+		case "offset":
+			p.off = atoi64(v)
+		case "lag":
+			p.lag = atoi64(v)
+		}
+	}
+	if ip == "" {
+		return replPeer{}, false
+	}
+	p.addr = ip + ":" + port
+	return p, true
 }
 
 func atoi64(s string) int64 {
