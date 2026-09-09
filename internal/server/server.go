@@ -67,6 +67,12 @@ type Config struct {
 	// required for a multi-node cluster. Both ignored in standalone mode.
 	RaftAddr string
 	RaftDir  string
+	// RaftInsecure acknowledges that the plaintext, unauthenticated Raft peer
+	// transport may bind a non-loopback address (M23). Without it, a multi-node
+	// cluster refuses to start on a public raft bind — the peer transport has no
+	// auth/TLS (trusted-network threat model), so loopback is the only safe
+	// default. Independent of ProtectedMode. Ignored in standalone/single-node.
+	RaftInsecure bool
 	// ElectionTimeoutMin/Max and HeartbeatInterval tune Raft timing (multi-node
 	// only). Zero passes through to ToyRaft's defaults, so unset preserves M19
 	// behaviour; the routing/linearizability harnesses widen them to steady the
@@ -208,6 +214,24 @@ func New(cfg Config) (*Server, error) {
 		nodeID := cfg.NodeID
 		if nodeID == "" {
 			nodeID = "n1"
+		}
+		// Multi-node clusters open a real HTTP peer transport (single-node uses a
+		// no-op transport, no bind). Guard the effective raft bind before it opens:
+		// RaftAddr, or the self peer's Addr from Peers when RaftAddr is unset —
+		// the same resolution cluster.newMultiNode does.
+		if len(cfg.Peers) > 1 {
+			raftBind := cfg.RaftAddr
+			if raftBind == "" {
+				for _, p := range cfg.Peers {
+					if string(p.ID) == nodeID {
+						raftBind = p.Addr
+						break
+					}
+				}
+			}
+			if err := checkRaftBind(raftBind, cfg.RaftInsecure); err != nil {
+				return nil, err
+			}
 		}
 		node, err := cluster.New(cluster.Config{
 			NodeID:             nodeID,

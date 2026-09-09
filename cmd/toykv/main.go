@@ -43,6 +43,10 @@ flags:
                        redirect target.
   -raft-addr   string  this node's peer-transport bind; defaults to the self entry in -peers
   -raft-dir    string  directory for the file-backed Raft log; required for a multi-node cluster
+  -raft-insecure       allow a non-loopback Raft peer bind (plaintext, unauthenticated; trusted-network only)
+  -election-timeout-min dur  Raft election timeout lower bound; 0 = ToyRaft default (multi-node only)
+  -election-timeout-max dur  Raft election timeout upper bound; 0 = ToyRaft default (multi-node only)
+  -heartbeat-interval   dur  Raft leader heartbeat interval; 0 = ToyRaft default (multi-node only)
   -otel-endpoint    string  OTLP collector endpoint host:port ("" disables all telemetry)
   -otel-protocol    string  OTLP transport: grpc|http (default "grpc")
   -otel-service-name string service.name reported to telemetry (default "toykv")
@@ -63,11 +67,15 @@ func main() {
 		tlsKey      = flag.String("tls-key", "", "path to the TLS private key (PEM); requires -tls-cert")
 		protected   = flag.String("protected-mode", "yes", "refuse a non-loopback bind without auth/TLS: yes|no")
 
-		replicate = flag.Bool("replicate", false, "enable the Raft-replicated command path")
-		nodeID    = flag.String("node-id", "n1", "Raft node id; used only with -replicate")
-		peers     = flag.String("peers", "", "cluster membership 'id@host:raftport[/host:clientport],...' incl self; empty = single-node")
-		raftAddr  = flag.String("raft-addr", "", "this node's peer-transport bind; defaults to the self entry in -peers")
-		raftDir   = flag.String("raft-dir", "", "directory for the file-backed Raft log; required for a multi-node cluster")
+		replicate    = flag.Bool("replicate", false, "enable the Raft-replicated command path")
+		nodeID       = flag.String("node-id", "n1", "Raft node id; used only with -replicate")
+		peers        = flag.String("peers", "", "cluster membership 'id@host:raftport[/host:clientport],...' incl self; empty = single-node")
+		raftAddr     = flag.String("raft-addr", "", "this node's peer-transport bind; defaults to the self entry in -peers")
+		raftDir      = flag.String("raft-dir", "", "directory for the file-backed Raft log; required for a multi-node cluster")
+		raftInsecure = flag.Bool("raft-insecure", false, "allow a non-loopback Raft peer bind (plaintext, unauthenticated; trusted-network only)")
+		electionMin  = flag.Duration("election-timeout-min", 0, "Raft election timeout lower bound; 0 = ToyRaft default (multi-node only)")
+		electionMax  = flag.Duration("election-timeout-max", 0, "Raft election timeout upper bound; 0 = ToyRaft default (multi-node only)")
+		heartbeat    = flag.Duration("heartbeat-interval", 0, "Raft leader heartbeat interval; 0 = ToyRaft default (multi-node only)")
 
 		otelEndpoint    = flag.String("otel-endpoint", "", "OTLP collector endpoint host:port; \"\" disables telemetry")
 		otelProtocol    = flag.String("otel-protocol", "grpc", "OTLP transport: grpc|http")
@@ -116,6 +124,9 @@ func main() {
 	if !protectedOn {
 		log.Warn("protected mode disabled via -protected-mode no; non-loopback binds will not be refused")
 	}
+	if *raftInsecure && *replicate {
+		log.Warn("-raft-insecure set; the plaintext, unauthenticated Raft peer transport may bind a non-loopback address (trusted-network only)")
+	}
 
 	// Telemetry is initialized before the server so its providers/globals
 	// are in place when the server registers observable-gauge callbacks.
@@ -162,6 +173,11 @@ func main() {
 		Peers:         peerList,
 		RaftAddr:      *raftAddr,
 		RaftDir:       *raftDir,
+		RaftInsecure:  *raftInsecure,
+
+		ElectionTimeoutMin: *electionMin,
+		ElectionTimeoutMax: *electionMax,
+		HeartbeatInterval:  *heartbeat,
 	})
 	if err != nil {
 		log.Error("server init failed", "err", err)

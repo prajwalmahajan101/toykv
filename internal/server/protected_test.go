@@ -3,6 +3,7 @@ package server
 import (
 	"testing"
 
+	"github.com/prajwalmahajan101/toykv/internal/cluster"
 	"github.com/prajwalmahajan101/toykv/internal/store"
 )
 
@@ -100,5 +101,63 @@ func TestNew_ProtectedModeRefusal(t *testing.T) {
 	loop.Addr = "127.0.0.1:0"
 	if _, err := New(loop); err != nil {
 		t.Fatalf("New on loopback: %v", err)
+	}
+}
+
+func TestCheckRaftBind(t *testing.T) {
+	tests := []struct {
+		name       string
+		raftAddr   string
+		insecure   bool
+		wantRefuse bool
+	}{
+		// A public raft bind without -raft-insecure is the one unsafe case.
+		{"non-loopback", "0.0.0.0:7001", false, true},
+		{"empty host (all ifaces)", ":7001", false, true},
+		{"lan ip", "192.168.1.5:7001", false, true},
+		{"ipv6 unspecified", "[::]:7001", false, true},
+
+		// -raft-insecure acknowledges the trusted-network posture.
+		{"non-loopback insecure", "0.0.0.0:7001", true, false},
+
+		// Loopback raft binds are always allowed.
+		{"ipv4 loopback", "127.0.0.1:7001", false, false},
+		{"ipv6 loopback", "[::1]:7001", false, false},
+		{"localhost", "localhost:7001", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkRaftBind(tt.raftAddr, tt.insecure)
+			if tt.wantRefuse && err == nil {
+				t.Fatalf("checkRaftBind(%q,%v) = nil, want refusal", tt.raftAddr, tt.insecure)
+			}
+			if !tt.wantRefuse && err != nil {
+				t.Fatalf("checkRaftBind(%q,%v) = %v, want allow", tt.raftAddr, tt.insecure, err)
+			}
+		})
+	}
+}
+
+// TestNew_RaftBindRefusal proves server.New refuses a multi-node cluster whose
+// plaintext Raft peer transport would bind a non-loopback address without the
+// -raft-insecure acknowledgement. The guard runs before cluster.New, so no real
+// transport/log is opened — only the refusal path is exercised here; the allow
+// paths are covered by TestCheckRaftBind (standing up a real cluster is an
+// integration concern, not a guard test).
+func TestNew_RaftBindRefusal(t *testing.T) {
+	cfg := Config{
+		Addr:      "127.0.0.1:0", // loopback client bind so protected mode passes first
+		Store:     store.New(),
+		Replicate: true,
+		NodeID:    "n1",
+		Peers: []cluster.Peer{
+			{ID: "n1", Addr: "0.0.0.0:7001"}, // self: public raft bind → unsafe
+			{ID: "n2", Addr: "10.0.0.2:7001"},
+			{ID: "n3", Addr: "10.0.0.3:7001"},
+		},
+		RaftDir: t.TempDir(),
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("New on multi-node with non-loopback raft bind + no -raft-insecure = nil, want refusal")
 	}
 }
