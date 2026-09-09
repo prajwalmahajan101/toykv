@@ -58,6 +58,38 @@ func checkProtectedMode(addr, requirePass string, tlsOn bool, mode string) error
 	)
 }
 
+// checkRaftBind returns a refusal error when a multi-node cluster would bind
+// its Raft peer transport to a non-loopback address without an explicit
+// insecure acknowledgement, or nil to allow startup (M23).
+//
+// Unlike the client bind (checkProtectedMode), the ToyRaft peer transport is
+// *always* plaintext and unauthenticated — its threat model is a trusted
+// network — so there is no auth/TLS posture that makes a public bind safe. The
+// only safe bind is loopback; -raft-insecure is a deliberate trusted-network
+// acknowledgement (private subnet / VPC / WireGuard) and the sole override.
+// This guard is independent of protected mode: a plaintext peer bind on a
+// public interface is unsafe regardless of the client-bind knob. See ADR-0019.
+func checkRaftBind(raftAddr string, insecure bool) error {
+	if insecure {
+		return nil
+	}
+	loopback, err := bindIsLoopback(raftAddr)
+	if err != nil {
+		return fmt.Errorf("raft bind guard: cannot parse raft address %q: %w", raftAddr, err)
+	}
+	if loopback {
+		return nil
+	}
+	return fmt.Errorf(
+		"raft bind guard: refusing to bind the plaintext, unauthenticated Raft peer transport "+
+			"to non-loopback address %q. The peer transport has no auth or TLS (trusted-network "+
+			"threat model). Fix by one of: bind a loopback raft address, place peers on a private "+
+			"network (VPC/WireGuard) and pass -raft-insecure to acknowledge, or pass -raft-insecure "+
+			"to override",
+		raftAddr,
+	)
+}
+
 // bindIsLoopback reports whether addr binds only the loopback interface.
 // The policy is fail-safe: an empty or unspecified host (":6390",
 // "0.0.0.0", "::") binds all interfaces and counts as non-loopback (the
