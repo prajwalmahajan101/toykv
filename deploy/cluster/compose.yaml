@@ -1,0 +1,83 @@
+# Local 3-node replicated toykv cluster (v3, M23).
+#
+#   docker compose -f deploy/cluster/compose.yaml up --build
+#
+# All three nodes share the same -peers membership and talk over the compose
+# bridge network. Notes on the flags:
+#   -protected-mode no : the client bind is 0.0.0.0:6390 inside each container;
+#                        this is a local demo on a trusted bridge, so the
+#                        client-bind safety net is opted out. Add -requirepass
+#                        for anything real.
+#   -raft-insecure     : the Raft peer transport is plaintext/unauthenticated
+#                        and here binds a non-loopback (service-DNS) address, so
+#                        the M23 raft-bind guard requires this acknowledgement.
+#                        Safe only because the bridge network is trusted.
+#
+# Client ports are published to the host as 6390/6391/6392. NOTE: NOTLEADER
+# redirect hints use the docker-internal service names (n1/n2/n3), which a
+# host-side redis-cli cannot resolve — run the smoke from inside the network
+# (see README.md) or target the current leader directly.
+
+services:
+  n1:
+    build: { context: ../.., dockerfile: Dockerfile }
+    command:
+      - -replicate
+      - -node-id=n1
+      - -addr=0.0.0.0:6390
+      - -raft-addr=n1:7001
+      - -raft-dir=/data
+      - -raft-insecure
+      - -protected-mode=no
+      - -election-timeout-min=2s
+      - -election-timeout-max=4s
+      - -heartbeat-interval=300ms
+      - -peers=n1@n1:7001/n1:6390,n2@n2:7001/n2:6390,n3@n3:7001/n3:6390
+    ports: ["6390:6390"]
+    volumes: [n1-raft:/data]
+    networks: [cluster]
+
+  n2:
+    build: { context: ../.., dockerfile: Dockerfile }
+    command:
+      - -replicate
+      - -node-id=n2
+      - -addr=0.0.0.0:6390
+      - -raft-addr=n2:7001
+      - -raft-dir=/data
+      - -raft-insecure
+      - -protected-mode=no
+      - -election-timeout-min=2s
+      - -election-timeout-max=4s
+      - -heartbeat-interval=300ms
+      - -peers=n1@n1:7001/n1:6390,n2@n2:7001/n2:6390,n3@n3:7001/n3:6390
+    ports: ["6391:6390"]
+    volumes: [n2-raft:/data]
+    networks: [cluster]
+
+  n3:
+    build: { context: ../.., dockerfile: Dockerfile }
+    command:
+      - -replicate
+      - -node-id=n3
+      - -addr=0.0.0.0:6390
+      - -raft-addr=n3:7001
+      - -raft-dir=/data
+      - -raft-insecure
+      - -protected-mode=no
+      - -election-timeout-min=2s
+      - -election-timeout-max=4s
+      - -heartbeat-interval=300ms
+      - -peers=n1@n1:7001/n1:6390,n2@n2:7001/n2:6390,n3@n3:7001/n3:6390
+    ports: ["6392:6390"]
+    volumes: [n3-raft:/data]
+    networks: [cluster]
+
+networks:
+  cluster:
+    driver: bridge
+
+volumes:
+  n1-raft:
+  n2-raft:
+  n3-raft:
