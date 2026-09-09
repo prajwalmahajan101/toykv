@@ -78,6 +78,50 @@ Re-run for the v2.0.0 release with the **typed** default (`set,get,lpush,rpush,h
 
 The M16 telemetry is off by default; the release gate requires that to be a true no-op vs the pre-M16 binary. A back-to-back A/B (pre-M16 `a3d62e1` vs `feat/release-v2`, `everysec`, interleaved) initially showed the disabled path **~18–21% slower** — attribute/option construction allocates even against no-op providers (~29 allocs/op). Fixed by memoizing per-command instrument attributes (see [ADR-0017](./adr/0017-opentelemetry-signal-model-and-otlp-export.md) M17 amendment), **without** adding an `if enabled` guard: disabled path dropped to **14 allocs/op (1757 ns/op)**, SET returned to parity, and pipelined GET to within ~7% (residual = the two irreducible no-op `Tracer.Start` context allocations). Guarded by `TestObserveCommand_Disabled_AllocBudget`.
 
+### Cluster mode (v3, M23)
+
+Replication adds a `Propose → replicate → Apply` round-trip in front of every mutating command,
+so a clustered `SET` pays a quorum-ack latency that a standalone `SET` does not; reads served by
+the leader are unaffected. This section measures that cost.
+
+**Methodology (fill the table from a manual run — numbers are not committed):**
+
+1. Bring up a 3-node cluster with loopback raft binds and distinct client ports:
+   ```sh
+   docker compose -f deploy/cluster/compose.yaml up --build   # or three local processes
+   ```
+2. Identify the leader — `redis-cli -p <port> INFO replication | grep role` (`role:master`).
+3. Point the bench at the **leader's client port** (a follower redirects writes with `NOTLEADER`,
+   which `redis-benchmark` does not follow):
+   ```sh
+   make bench-cluster BENCH_PORT=<leader-client-port>
+   ```
+4. Record one row per command below and compare against the standalone `everysec` row above
+   (the closest standalone analogue — replication acks are the added cost, not local fsync).
+
+Measured on the `deploy/cluster` 3-node stack (Docker bridge, `valkey-benchmark`, default
+`-c 50`, `appendfsync=always`, `-election-timeout-min/max=2s/4s`, `-heartbeat-interval=300ms`),
+targeting the leader:
+
+| mode | command | n | rps | p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|---|---|
+| 3-node cluster | SET | 5 000 | 83.4 | 600.6 | 629.2 | 658.9 |
+| 3-node cluster | GET (leader) | 100 000 | 35 149 | 0.639 | 1.431 | 5.151 |
+| 3-node cluster | INCR | 3 000 | 83.1 | 601.1 | 634.9 | 688.1 |
+
+> **Reading these.** Writes (`SET`/`INCR`) run **~600 ms p50 / ~83 rps** — three orders of
+> magnitude slower than standalone `SET`. That is the honest replication cost on this stack:
+> every mutation is `Propose → HTTP-replicate to peers → commit → Apply → AOF fsync(always)`,
+> and `valkey-benchmark` issues no pipelining, so per-op latency (peer round-trip + fsync)
+> dominates. The write `n` is deliberately small — at ~83 rps a 100 000-op run is ~20 min. On a
+> real network with `appendfsync=everysec` and client pipelining the write number rises sharply;
+> this stack is a *correctness* demo, not a throughput target.
+>
+> **Reads** are leader-local (no consensus on the default non-linearizable read path — see
+> [ADR-0020](./adr/0020-write-redirection-and-cluster-read-consistency.md)) and track the
+> standalone `GET` band (~35 k rps, sub-ms p50). The point is the write/read *delta*, not a
+> headline number — the anti-targets below still apply.
+
 ## Reading the numbers
 
 - **`SET` under `always`** is gated by `fsync` round-trip. Compare to your disk's `fdatasync` latency, not Redis.

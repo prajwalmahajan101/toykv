@@ -39,7 +39,7 @@
 - Test harnesses (CI, integration tests).
 - A private network you control, with `-requirepass` + TLS enabled — the M12 posture.
 - Behind a tightly-scoped private network with auth handled upstream (reverse proxy + mTLS, SSH tunnel).
-- As a `tinyraft` (future) state machine, where Raft handles the network.
+- As a replicated cluster (`-replicate`, v3) **on a trusted private network** — the Raft peer transport is plaintext; see [Cluster / replication](#cluster--replication-v3).
 
 ## Observability & telemetry (M16)
 
@@ -60,6 +60,30 @@ process by default. When enabled:
 - **The local stack is local-only.** `deploy/otel-lgtm/` runs Grafana with
   anonymous admin and open OTLP ports for convenience — never expose that
   container beyond localhost.
+
+## Cluster / replication (v3)
+
+`-replicate` embeds [ToyRaft](https://github.com/prajwalmahajan101/toyraft) and, for a
+multi-node cluster, opens an HTTP peer transport (`-raft-addr`) that carries the Raft log
+between nodes. **This peer transport is plaintext and unauthenticated** — ToyRaft's threat
+model is a *trusted network*. Anyone who can reach the raft port can read replicated data,
+inject log entries, or impersonate a peer. There is no auth, no TLS, and no per-peer identity
+check on that plane.
+
+- **Raft-bind guard (M23).** A multi-node cluster **refuses to start** when its effective raft
+  bind (`-raft-addr`, or the self entry in `-peers`) is a non-loopback address, unless you pass
+  `-raft-insecure` to acknowledge the trusted-network posture. Loopback raft binds (same-host
+  multi-process testing) start clean. This is independent of `-protected-mode`: a plaintext peer
+  bind on a public interface is unsafe regardless of the client-bind knob.
+- **`-raft-insecure` is not "make it secure" — it is "I accept the plaintext peer plane."** Only
+  set it when every peer sits on a private network you control (VPC, private subnet, WireGuard /
+  IPsec mesh, or an SSH-tunnelled overlay). It logs a warning at startup.
+- **The client plane still applies.** `-requirepass` / TLS / protected mode gate client
+  connections (`-addr`) exactly as in v2; the raft guard is an additional, separate check for
+  the peer plane. A cluster that serves clients over TLS still ships raft traffic in cleartext.
+- **Do not expose the raft port to any untrusted network**, with or without `-raft-insecure`.
+  mTLS / auth on the peer transport is a **v4 deferral** (gated on ToyRaft transport security —
+  see the ROADMAP v4 table). See [ADR-0019](./adr/0019-cluster-mode-transport-and-raft-log-storage-layout.md).
 
 ## Reporting vulnerabilities
 

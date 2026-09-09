@@ -137,3 +137,22 @@ is sufficient for these tests.
   transport's self-exclusion is a local derivation, not a per-node config diff.
 - **Implement redirect now (M19).** Deferred to M20 by the roadmap split so
   M19.1 stays "wiring + happy path"; surfacing `NOTLEADER` is the minimal seam.
+
+## M23 amendment — raft-bind security guard
+
+**Decision.** A multi-node cluster (`len(Peers) > 1`) **refuses to start** when its
+effective raft bind (`-raft-addr`, or the self peer's `Addr` from `-peers`) is a
+non-loopback address, unless `-raft-insecure` is passed. Implemented as
+`checkRaftBind` in `internal/server/protected.go`, called from `server.New`
+alongside `checkProtectedMode`, before the peer transport opens.
+
+**Why a separate guard, not `-protected-mode`.** The client-bind guard
+(`checkProtectedMode`) is satisfied by auth **or** TLS — a public client bind can
+be made safe. The Raft peer transport has *neither*: it is always plaintext and
+unauthenticated (ToyRaft threat model = trusted network). So the only safe raft
+bind is loopback, and the sole override is an explicit trusted-network
+acknowledgement (`-raft-insecure`, e.g. a VPC / WireGuard mesh). Making the guard
+independent of `-protected-mode` means a cluster can serve clients over TLS while
+still being told to acknowledge — or fix — the cleartext peer plane. Peer-transport
+mTLS/auth is a v4 deferral (gated on ToyRaft transport security). See
+[SECURITY §Cluster / replication](../SECURITY.md#cluster--replication-v3).

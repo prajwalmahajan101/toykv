@@ -87,7 +87,22 @@ Replicated (M18, single-node preview of the v3 Raft path):
 ./bin/toykv -addr :6390 -dir ./data -replicate -node-id n1
 ```
 
-`-replicate` routes every mutating command through an embedded [ToyRaft](https://github.com/prajwalmahajan101/toyraft) `Propose → Apply` cycle before it touches the store; reads and local-admin commands stay local. On a single node this is a functional preview — the node is trivially its own leader, the Raft log is in memory, and the AOF remains the durability source (state re-derives from the AOF on restart), so behaviour and durability match standalone. Multi-node replication, election, and client routing arrive in M19–M20. See [ADR-0018](./docs/adr/0018-raft-embedding-command-envelope-and-statemachine-seam.md) for the state-machine seam.
+`-replicate` routes every mutating command through an embedded [ToyRaft](https://github.com/prajwalmahajan101/toyraft) `Propose → Apply` cycle before it touches the store; reads and local-admin commands stay local. On a single node this is a functional preview — the node is trivially its own leader, the Raft log is in memory, and the AOF remains the durability source (state re-derives from the AOF on restart), so behaviour and durability match standalone. See [ADR-0018](./docs/adr/0018-raft-embedding-command-envelope-and-statemachine-seam.md) for the state-machine seam.
+
+Multi-node cluster (v3 — replicated, leader-based, single-writer):
+
+```sh
+# Three nodes on one host. id@raftport/clientport per peer; raft binds stay loopback.
+PEERS='n1@127.0.0.1:7001/127.0.0.1:6390,n2@127.0.0.1:7002/127.0.0.1:6391,n3@127.0.0.1:7003/127.0.0.1:6392'
+./bin/toykv -replicate -node-id n1 -raft-dir ./d1 -addr 127.0.0.1:6390 -peers "$PEERS"
+./bin/toykv -replicate -node-id n2 -raft-dir ./d2 -addr 127.0.0.1:6391 -peers "$PEERS"
+./bin/toykv -replicate -node-id n3 -raft-dir ./d3 -addr 127.0.0.1:6392 -peers "$PEERS"
+
+redis-cli -p 6390 set k v      # write to any node; a follower replies -NOTLEADER host:port
+                               # toykv-cli / toykv-tui follow the redirect automatically
+```
+
+Any node accepts writes: the leader applies them, a follower returns a `-NOTLEADER host:port` redirect (the `toykv` CLI/TUI retry against the hint). Reads are leader-served by default; a connection can opt into stale follower-local reads with `READONLY`. The `-peers` grammar is `id@host:raftport[/host:clientport]` — the `/clientport` suffix advertises where redirects point. The **Raft peer transport is plaintext and unauthenticated**: a multi-node cluster refuses to start on a non-loopback raft bind unless you pass `-raft-insecure` (trusted-network only) — see [SECURITY](./docs/SECURITY.md#cluster--replication-v3). One-command local stack: [`deploy/cluster/`](./deploy/cluster/). Design: [ADR-0019](./docs/adr/0019-cluster-mode-transport-and-raft-log-storage-layout.md) / [ADR-0020](./docs/adr/0020-write-redirection-and-cluster-read-consistency.md). Replication is a correctness demo, not a throughput target: on the local 3-node stack a replicated `SET` runs ~83 rps / ~600 ms p50 (`Propose → replicate → commit → Apply → fsync(always)`, unpipelined) while leader `GET` stays ~35 k rps / sub-ms — full table + methodology in [`docs/BENCHMARKS.md`](./docs/BENCHMARKS.md#cluster-mode-v3-m23) (`make bench-cluster`).
 
 The TUI:
 

@@ -911,3 +911,71 @@ These are wrapped with `fmt.Errorf("%w: ...")` at boundaries; conn handlers map 
 - Streaming replies (`XADD`/`XREAD`).
 - ~~TLS transport~~ — server-side TLS shipped in M12; TUI-client TLS dialing is deferred (v2.x backlog).
 - ~~ACL/auth~~ — `requirepass`/`AUTH` shipped in M12; TUI prompts/authenticates (M14, §7.6). ACLs remain out of scope.
+
+## 13. v3.0 delta — replication (`internal/cluster`, M18–M23)
+
+Opt-in via `-replicate`. With it off, none of this is on the path — the server is
+byte-identical to v2. Design decisions are recorded in ADR-0018–0021.
+
+### 13.1 Command envelope
+
+Only *mutating* commands are replicated. The envelope is a deterministic byte
+encoding of `argv` with a leading version byte, so every replica applies the
+identical bytes:
+
+```
+[1]byte  version (0x01)
+RESP-encoded *N array of the command argv (same framing the AOF uses)
+```
+
+Reusing the RESP array framing means the envelope decoder and the AOF replay
+decoder share a code path; `StateMachine.Apply` decodes the envelope and runs the
+same handler logic as live dispatch and AOF replay.
+
+### 13.2 Command classification
+
+| Class | Examples | Routing |
+|---|---|---|
+| Mutating | `SET`, `DEL`, `EXPIRE`, `INCR`, `LPUSH`, `HSET`, `RENAME`, `COPY`, `FLUSHDB` | `raft.Propose(envelope)` → `Apply` |
+| Read | `GET`, `EXISTS`, `TTL`, `LRANGE`, `HGETALL`, `SCAN`, `KEYS` | Local (leader by default; follower requires `READONLY`) |
+| Local-admin (never replicated) | `HELLO`, `AUTH`, `PING`, `INFO`, `BGREWRITEAOF` | Local always |
+
+### 13.3 StateMachine
+
+`internal/cluster` implements ToyRaft's `raft.StateMachine`:
+
+- `Apply(index, data)` — decode envelope → run handler (mutate store → append AOF) →
+  return the reply. Applied in strict index order; the AOF append inside `Apply`
+  keeps each node's local durability in the M3/M11 crash-safe order.
+- `Snapshot()` / `Restore()` — return `ErrSnapshotUnsupported` per the ToyRaft `v1`
+  contract, but the store-serialization they will call is built and unit-tested now
+  (forward-compat for ToyRaft `v2` snapshots; real Raft-log compaction is a v3.x item).
+
+### 13.4 Routing & reads
+
+- **Write on a follower** → `-NOTLEADER <hint>`, where `<hint>` is the leader's
+  advertised client address (`/host:clientport` from `-peers`) when known, else
+  operator-readable text. `ClusterClient` (`internal/client`) retries against the
+  hint with bounded backoff + jitter; a leaderless window re-polls in place.
+- **Read model** — leader-served by default (a follower keyed-read redirects). A
+  per-connection `READONLY` flag opts into stale follower-local reads; `READWRITE`
+  reverts. Explicitly non-linearizable (ToyRaft `v1` has no ReadIndex).
+
+### 13.5 `WAIT` and `INFO replication`
+
+- `WAIT numreplicas timeout` — the leader blocks until ≥`numreplicas` replicas'
+  `Status().MatchIndex` reach the target write's index, or the timeout elapses;
+  returns the count actually reached. Never over-reports (verified against a
+  slow/partitioned follower). Note the leader's own id appears in `MatchIndex` —
+  filtered out when counting replicas (see MIGRATION-REPORT).
+- `INFO replication` — `role:master|slave`, `connected_slaves:N`, one
+  `slaveN:ip=…,port=…,state=online,offset=…,lag=…` line per replica (leader only),
+  and `master_repl_offset:<offset>`, derived from `Status()`.
+
+### 13.6 Security guard
+
+`checkRaftBind(raftAddr, insecure)` (`internal/server/protected.go`) runs in
+`server.New` for a multi-node cluster (`len(Peers) > 1`), refusing a non-loopback
+effective raft bind (from `-raft-addr` or the self peer's `Addr`) unless
+`-raft-insecure` is set. Independent of `-protected-mode` — the peer transport has
+no auth/TLS posture, so loopback is the only safe default (ADR-0019).

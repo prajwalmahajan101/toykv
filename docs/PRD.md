@@ -144,6 +144,40 @@ The v2 config surface adds `-requirepass`, `-tls-cert`/`-tls-key`,
 `-protected-mode`, and `-otel-endpoint`/`-otel-protocol`/`-otel-service-name`/
 `-otel-sampling`/`-otel-capture-keys` to the §5.7 flags.
 
+### 5.9 v3.0 functional additions (M18–M23)
+
+Delivered in the v3 cycle. Replication is **opt-in** (`-replicate`); with it off the
+server is byte-identical to v2. Scope is **replication only** — a leader-based,
+single-writer cluster; sets/sorted-sets/pub-sub/keyspace-events are deferred to v3.x.
+
+- **Replicated command path (M18).** With `-replicate`, every *mutating* command flows
+  through an embedded [ToyRaft](https://github.com/prajwalmahajan101/toyraft)
+  `Propose → StateMachine.Apply` cycle before it touches the store; reads and
+  local-admin (`HELLO`/`AUTH`/`PING`/`INFO`/`BGREWRITEAOF`) stay local. Single-node
+  is a functional preview (trivial self-leader); the AOF remains each node's local
+  durability source.
+- **Multi-node cluster + election (M19).** `-peers id@host:raftport[/host:clientport]`,
+  `-raft-addr`, `-raft-dir` wire an N-node (odd N≥3) cluster over ToyRaft's HTTP peer
+  transport with a file-backed Raft log; leader election, failover, and a
+  linearizability harness prove no acked-write loss across leader kill / partition.
+- **Client routing (M20).** A follower write returns `-NOTLEADER host:port`; the
+  CLI/TUI retry against the hint. Reads are leader-served by default; `READONLY` /
+  `READWRITE` opt a connection into (documented non-linearizable) stale follower reads.
+- **`WAIT` + INFO replication (M21).** `WAIT numreplicas timeout` blocks until N
+  replicas ack the write's index (truthful, never over-reports); `INFO replication`
+  reports role, leader, per-replica lag, and commit/apply/log offsets. Raft signals
+  extend the M16 OTel surface.
+- **TUI v3 (M22).** A cluster pane renders live topology (role, per-replica offset/lag)
+  from `INFO replication`, following leadership changes; standalone layout unchanged.
+- **Release hardening (M23).** A **raft-bind guard** refuses a non-loopback,
+  plaintext raft peer bind without `-raft-insecure` (the peer transport is
+  trusted-network-only); cluster-mode benchmarks; a `deploy/cluster` compose.
+
+The v3 config surface adds `-replicate`, `-node-id`, `-peers`, `-raft-addr`,
+`-raft-dir`, and `-raft-insecure` to the §5.7 flags. **Non-goals (v3):** sharding /
+Redis Cluster slot model, dynamic membership, multi-writer, linearizable reads,
+peer-transport auth/mTLS — all deferred (v3.x / v4).
+
 ## 6. Non-functional requirements
 
 | Area | Requirement |

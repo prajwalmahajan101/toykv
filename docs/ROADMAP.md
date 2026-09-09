@@ -343,12 +343,14 @@ M19 is the largest, highest-blast-radius milestone in v3 (the distributed core: 
 
 ### M23 — Bench + dogfood report + polish + v3.0.0
 **Branch:** `feat/release-v3` · **Depends on:** M18–M22 all merged
+
+> **Status (on `feat/release-v3`).** ✅ Raft-bind guard (`-raft-insecure`, `checkRaftBind`) + tests · ✅ SECURITY cluster section · ✅ cluster bench harness (`make bench-cluster`) + methodology + **measured numbers** (3-node stack: `SET` ~83 rps/600 ms p50, `GET` ~35 k rps/0.64 ms p50 — `docs/BENCHMARKS.md`) · ✅ `-election-timeout-min/max` + `-heartbeat-interval` flags (stable-leader bench) · ✅ README 3-node quickstart · ✅ PRD/HLD/LLD v3 deltas · ✅ `deploy/cluster` compose + Dockerfile · ✅ ADR index note + ADR-0019 M23 amendment · ✅ migration report finalized. **Pending (release gate, external):** ToyRaft `rc.2 → v1.0.0` bump (blocked on upstream tag) and the `v3.0.0` tag (post-merge).
 - Re-run `make bench` in cluster mode (replication cost vs standalone); README records the numbers.
 - **Migration / dogfooding report (`docs/TOYRAFT-MIGRATION-REPORT.md`) — a release deliverable.** The report is **authored incrementally as the integration happens** — each of M18–M22 appends its findings (confirmed bugs with repros, API friction, docs gaps, feature requests) as they surface against running code — and is finalized here at M23, then delivered to ToyRaft as its `v1.0.0` dogfood-gate feedback. This is the reciprocal half of the mutual unblock. *(Not pre-written: findings are recorded only once observed in integration.)*
 - **Security note & bind guard:** the ToyRaft peer transport is unauthenticated/plaintext (ToyRaft threat model = trusted network). Document it; extend protected-mode to refuse an untrusted-network raft bind without an explicit override. Update [`docs/SECURITY.md`](./SECURITY.md).
 - Docs: PRD/HLD/LLD deltas for replication; README cluster quickstart; a `deploy/` compose for a local 3-node cluster.
 - ADR reconciliation: 0018–0021 land after their owning milestones (M18/M19/M20/M21) per [`docs/adr/README.md`](./adr/README.md); M23 verifies all four files exist and the index note is current.
-- **Coordinate ToyRaft `v1.0.0`:** bump the dependency `rc.1 → v1.0.0` once ToyRaft tags it off this integration.
+- **Coordinate ToyRaft `v1.0.0`:** bump the dependency `rc.2 → v1.0.0` once ToyRaft tags it off this integration (currently pinned `v1.0.0-rc.2` after the M19 transport fix).
 - **Release-hardening gate (all must pass before the tag):** linearizability harness green on `-race`; leader-kill / partition-heal suite green; standalone-mode benchmarks unchanged vs v2; crash-durability suite green with the SM in the loop; migration report delivered.
 - Goreleaser reused from v1/v2; tag `v3.0.0`.
 
@@ -434,7 +436,7 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 | M20 | Client routing: write redirect + read model | ✅ | _feat/cluster-routing_ | `m20` |
 | M21 | `WAIT` + INFO replication + cluster observability | ✅ | _feat/wait-info-repl_ | `m21` |
 | M22 | TUI v3: cluster view | ✅ | _feat/tui-cluster-view_ | `m22` |
-| M23 | Bench + dogfood report + polish + v3.0.0 | 📋 Planned | — | `v3.0.0` |
+| M23 | Bench + dogfood report + polish + v3.0.0 | 🚧 In progress | _feat/release-v3_ | `v3.0.0` |
 
 ## Changes from the previous roadmap
 
@@ -461,3 +463,4 @@ The source spec is emphatic about scope creep: *"that's how you end up half-buil
 - **Four architecture decisions locked (2026-09-04):** replication-only scope; leader reads + `READONLY` opt-in stale replica reads (no ReadIndex in ToyRaft `v1`); client-driven write redirect; ship on `rc.1` with an unbounded Raft log (compaction structured now, deferred to v3.x pending ToyRaft `v2` snapshots).
 - **Per-milestone dependency + ADR ownership** continues the v2 pattern: Raft-embed/StateMachine seam → M18 (ADR-0018), cluster/transport/storage → M19 (ADR-0019), write-redirect + read model → M20 (ADR-0020), `WAIT` + replication telemetry → M21 (ADR-0021). M22 (TUI v3) consumes M20/M21 with no new ADR expected.
 - **New v4.0 deferral section added.** Genuinely-major post-v3 ambitions (multi-Raft-group sharding, elastic membership, learner reads, peer mTLS, backup/DR, client SDKs) are tracked with their upstream gates — explicitly **not committed**, with the spec-rejected items (`MULTI`/`EXEC`, Lua) called out. "Ship v3.0, stop" is the default terminal state.
+- **M23 landed on `feat/release-v3` (2026-09-09).** Raft-bind security guard — `checkRaftBind` refuses a non-loopback, plaintext peer bind for a multi-node cluster unless `-raft-insecure` is set, independent of `-protected-mode` (ADR-0019 M23 amendment, `docs/SECURITY.md` cluster section). Cluster-bench harness (`make bench-cluster` + `docs/BENCHMARKS.md` methodology; numbers are a manual run). README 3-node quickstart; PRD §5.9 / HLD §17 / LLD §13 replication deltas; `deploy/cluster` compose + root `Dockerfile`; ADR index v3 budget line; migration report finalized. **Release gate still open:** cluster bench numbers (manual), ToyRaft `rc.2 → v1.0.0` bump (blocked on upstream tag), and the `v3.0.0` tag.
