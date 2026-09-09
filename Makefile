@@ -1,4 +1,4 @@
-.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep compat compat-prep chaos chaos-smoke ci hooks clean help
+.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep bench-cluster bench-cluster-prep compat compat-prep chaos chaos-smoke ci hooks clean help
 
 GO          ?= go
 GOFMT       ?= gofmt
@@ -29,6 +29,8 @@ help:
 	@echo "  test       - go test -race -timeout $(TIMEOUT) ./..."
 	@echo "  bench-prep - print bench methodology and verify redis-benchmark"
 	@echo "  bench      - redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)"
+	@echo "  bench-cluster-prep - print cluster-bench methodology (leader-targeted)"
+	@echo "  bench-cluster      - redis-benchmark against a cluster leader (M23)"
 	@echo "  compat-prep- verify Docker + pull $(COMPAT_IMAGE) for the redis-cli sweep"
 	@echo "  compat     - run the redis-cli byte-compat sweep (§5) via Docker, no local install"
 	@echo "  chaos      - full soak: go test -race -timeout 10m ./test/chaos/..."
@@ -89,6 +91,25 @@ bench-prep:
 	@echo "Current run target: $(BENCH_HOST):$(BENCH_PORT)  -t $(BENCH_TESTS)  -n $(BENCH_N)"
 
 bench: bench-prep
+	redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)
+
+# Cluster-mode bench (M23): measures replication cost vs the standalone table.
+# Point BENCH_PORT at the *leader's* client port — a follower redirects writes,
+# which redis-benchmark does not follow, so target the leader directly.
+bench-cluster-prep:
+	@if ! command -v redis-benchmark >/dev/null 2>&1; then \
+	  echo "redis-benchmark not installed. Install redis-tools (apt) or redis (brew)."; \
+	  exit 1; \
+	fi
+	@echo "Cluster bench methodology — record cluster rows in docs/BENCHMARKS.md, alongside standalone:"
+	@echo "  1. Bring up a 3-node cluster (loopback raft binds, distinct client ports):"
+	@echo "       docker compose -f deploy/cluster/compose.yaml up --build   # or three local processes"
+	@echo "  2. Find the leader:  redis-cli -p <port> INFO replication | grep role"
+	@echo "  3. Point at the leader:  make bench-cluster BENCH_PORT=<leader-client-port>"
+	@echo "  4. Compare SET/GET p50/p95/rps against the standalone (non-replicated) row."
+	@echo "Current run target: $(BENCH_HOST):$(BENCH_PORT)  -t $(BENCH_TESTS)  -n $(BENCH_N)"
+
+bench-cluster: bench-cluster-prep
 	redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)
 
 compat-prep:
