@@ -428,3 +428,36 @@ rather than adding layers. Component-level deltas:
 - **Hardening (M17).** The RESP codec bounds array element count and nesting
   depth (pre-auth DoS), and the release re-benches typed workloads and cuts
   `v2.0.0` — the earned major (protected mode is the one breaking change).
+
+## 17. v3.0 delta (M18–M23)
+
+v3 adds *distribution* without changing the v1/v2 shape: replication is opt-in
+(`-replicate`) and threads a consensus step through the single existing mutate
+chokepoint. Standalone stays byte-identical to v2.
+
+- **The integration seam (M18).** v2 mutates at one `dispatch()` chokepoint:
+  *mutate store → append AOF → reply*. Replicated, a mutating command becomes
+  `raft.Propose(envelope) → ToyRaft replicates → StateMachine.Apply` (which runs
+  the existing handler logic: mutate store → append AOF) *→ reply*. AOF becomes
+  each node's **local applied-state durability**; the **Raft log is the
+  replication source of truth**. The `replayApply` pattern (dispatch reused for
+  AOF replay) keeps the seam a single point. A new `internal/cluster` package
+  owns the ToyRaft `Node`, the command envelope codec, and the `StateMachine`
+  (ADR-0018).
+- **Cluster mode (M19).** `internal/cluster` wires ToyRaft's `pkg/transport/http`
+  (peer plane, distinct from the client port) and `pkg/storage/file` (Raft log);
+  role tracking (`Role()`/`LeaderHint()`/`Status()`) surfaces to the server.
+  Single-node uses a no-op transport; multi-node (N≥3 odd) uses the real one
+  (ADR-0019).
+- **Routing & reads (M20).** The dispatcher gates mutations on leadership: a
+  follower returns `-NOTLEADER <hint>`. `internal/client` grows a redirect-aware
+  `ClusterClient` (shared by CLI + TUI). A per-connection `READONLY` flag lets a
+  follower serve local reads (ADR-0020).
+- **Ack + telemetry (M21).** `WAIT` blocks on leader `MatchIndex`; `INFO
+  replication` derives role/lag/offsets from `Status()`; propose→commit→apply
+  spans + replication-lag/role gauges extend the M16 OTel surface (ADR-0021).
+- **Security boundary (M23).** The ToyRaft peer transport is plaintext and
+  unauthenticated (trusted-network threat model). `checkRaftBind` runs in
+  `server.New` (alongside `checkProtectedMode`) and refuses a non-loopback raft
+  bind for a multi-node cluster unless `-raft-insecure` is set — independent of
+  the client-bind `-protected-mode` knob (ADR-0019 / SECURITY §Cluster).
