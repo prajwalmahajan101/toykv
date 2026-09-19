@@ -122,8 +122,9 @@ is sufficient for these tests.
   trusted network). The bind guard + security note is M23.
 
 **Neutral**
-- Depends on ToyRaft `v1.0.0-rc.2` (the transport-constructibility fix). The
-  dependency bumps to `v1.0.0` at M23 once ToyRaft tags off this integration.
+- M19 required ToyRaft `v1.0.0-rc.2` (the `http.Config.Clock` transport-
+  constructibility fix). The dependency is now on the tagged **`v1.0.0`** (bumped
+  at M23 once ToyRaft tagged off this integration).
 
 ## Alternatives considered
 

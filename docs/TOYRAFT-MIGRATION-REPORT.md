@@ -1,13 +1,14 @@
 # ToyRaft Migration & Dogfooding Report
 
-**Status: FINAL (M18–M23 complete, 2026-09-09).** All findings recorded and delivered as
-ToyRaft's `v1.0.0` dogfood-gate feedback. The only open loop is the reciprocal upstream step:
-ToyRaft tags `v1.0.0`, toykv bumps the dependency `v1.0.0-rc.2 → v1.0.0`. See
-[M23 — delivery & finalization](#m23--delivery--finalization).
+**Status: FINAL (M18–M23 complete; v1.0.0 gate closed 2026-09-19).** All findings recorded and
+delivered as ToyRaft's `v1.0.0` dogfood-gate feedback. The reciprocal upstream step is **done**:
+ToyRaft tagged `v1.0.0` and toykv bumped the dependency `v1.0.0-rc.2 → v1.0.0` (build green,
+full `-race` suite passing). Both remaining open asks were addressed by `v1.0.0` — see
+[M23 — delivery & finalization](#m23--delivery--finalization) and the summary table.
 
 **What this is.** toykv v3.0 embeds [ToyRaft](https://github.com/prajwalmahajan101/toyraft)
-(embedded at `v1.0.0-rc.1`, now pinned `v1.0.0-rc.2` after the M19 transport fix) as its
-consensus library. ToyRaft's own roadmap gates its `v1.0.0`
+(embedded at `v1.0.0-rc.1`, pinned `v1.0.0-rc.2` after the M19 transport fix, now on the tagged
+`v1.0.0`) as its consensus library. ToyRaft's own roadmap gates its `v1.0.0`
 tag on a real consumer embedding it — toykv's running cluster is that consumer.
 This report is the reciprocal half of that mutual unblock: the findings toykv
 surfaces against the frozen public API — confirmed bugs (with repros), API
@@ -26,8 +27,12 @@ delivery/finalization section. Each finding is tagged:
 Severity is the *consumer* impact: **high** = blocked/worked-around a core path,
 **medium** = friction with a clean workaround, **low** = cosmetic/discoverability.
 
-Findings are delivered to ToyRaft as `v1.0.0` dogfood-gate feedback; the
-dependency bumps `rc.2 → v1.0.0` at M23 once ToyRaft tags off this integration.
+Findings were delivered to ToyRaft as `v1.0.0` dogfood-gate feedback; the
+dependency bump `rc.2 → v1.0.0` landed at M23 once ToyRaft tagged off this integration.
+`v1.0.0` addressed both remaining asks: `raft.Node.NodeID()` (self-ID for a `MatchIndex`
+follower count, FRICTION-06) and a nil-defaulting `inproc.HubConfig.Clock` making `inproc.Hub`
+externally constructible (FRICTION-07). toykv keeps its existing `MatchIndex` self-filter and
+its HTTP-path `chaosTransport` deliberately — see the M23 resolution note.
 
 ---
 
@@ -382,21 +387,23 @@ nothing to them.
 
 | Milestone | 🐞 Bug | 🧭 Friction | 💡 / 📄 Requests | Status |
 |---|---|---|---|---|
-| M18 | — | Propose drops Apply result; inproc Clock un-constructible | result-on-Propose / accessor; public clock ctor | worked around |
-| M19 | — | `http.Config.Clock` un-constructible (**fixed rc.2**); inproc Clock still blocked | nil-default `inproc.HubConfig.Clock`; public `pkg/raft.Clock` | 1 fixed, 1 open |
+| M18 | — | Propose drops Apply result; inproc Clock un-constructible | result-on-Propose / accessor; public clock ctor | **resolved in v1.0.0** (Propose returns Apply result; inproc Clock nil-defaults) |
+| M19 | — | `http.Config.Clock` un-constructible (**fixed rc.2**); inproc Clock still blocked | nil-default `inproc.HubConfig.Clock`; public `pkg/raft.Clock` | **resolved in v1.0.0** (inproc Clock nil-defaults) |
 | M20 | — | `LeaderHint()` returns NodeID not addr (expected) | none | clean |
-| M21 | `Status().MatchIndex` includes leader self-ID | no `NodeID()` on `raft.Node` | doc `MatchIndex` self-ID / `ReplicaMatchIndex()`; `NodeID()` on interface | fixed in toykv |
+| M21 | `Status().MatchIndex` includes leader self-ID | no `NodeID()` on `raft.Node` | doc `MatchIndex` self-ID / `ReplicaMatchIndex()`; `NodeID()` on interface | **resolved in v1.0.0** (`raft.Node.NodeID()` added; toykv keeps its self-filter) |
 | M22 | — | — | — | clean |
 | M23 | — | — | — | clean (release work; no ToyRaft surface touched) |
 
-**Arc totals:** 0 🐞 confirmed correctness bugs · 1 friction item fixed upstream (rc.2) · 2 open
-`v1.0.0` asks (constructibility, `MatchIndex` self-ID) · every documented consensus guarantee held.
+**Arc totals:** 0 🐞 confirmed correctness bugs · all friction items resolved by `v1.0.0`
+(1 fixed at rc.2, the rest at the tag) · every documented consensus guarantee held.
 
-**Single highest-value `v1.0.0` action** (unchanged since M19): generalize the rc.2 nil-`Clock`
-default to `inproc.HubConfig.Clock` and/or expose the narrow public `pkg/raft.Clock` — closes the
-whole constructibility class and unlocks the shipped chaos surface. **Second:** document (or
-strip via `ReplicaMatchIndex()`) the leader self-ID in `Status().MatchIndex` — the one real
-footgun a `WAIT`-implementing embedder hits. No 🐞 correctness defects across the entire arc.
+**Both `v1.0.0` asks resolved.** (1) The constructibility class is closed: `inproc.HubConfig.Clock`
+now nil-defaults to the real clock, so `inproc.Hub` is externally constructible with native
+`Partition`/`Heal`. toykv keeps `chaosTransport` deliberately — it wraps the *real HTTP*
+transport, so failover tests exercise the on-wire path a deployed cluster uses. (2) `raft.Node`
+now exposes `NodeID()`, so an embedder can strip the leader self-ID from `Status().MatchIndex`
+without a side-channel; toykv already stored its own id and keeps the working filter. No 🐞
+correctness defects across the entire arc.
 
 ---
 
@@ -409,23 +416,24 @@ so **M23 surfaced zero new ToyRaft findings**. The M18–M22 findings above are 
 are hereby delivered as ToyRaft's `v1.0.0` dogfood-gate feedback — the reciprocal half of the
 mutual unblock.
 
-**Dependency state.** toykv currently pins `github.com/prajwalmahajan101/toyraft
-v1.0.0-rc.2` (`go.mod`). The `rc.2` step from `rc.1` was ToyRaft's M19 fix
-(`http.Config.Clock` nil-default — see M19 above). The final `rc.2 → v1.0.0` bump is
-**pending the upstream `v1.0.0` tag**: ToyRaft tags off *this* integration, toykv then bumps
-the dependency and cuts `v3.0.0`. That is the only remaining step in the mutual unblock.
+**Dependency state.** toykv pins `github.com/prajwalmahajan101/toyraft v1.0.0` (`go.mod`) as of
+2026-09-19. The path was `rc.1 → rc.2` (ToyRaft's M19 `http.Config.Clock` nil-default fix — see
+M19 above) `→ v1.0.0` (this bump). The `rc.2 → v1.0.0` bump is **done**: `go build`/`go vet`
+clean and the full `-race` suite passes on the tagged release. The one adapt required was
+`raft.Node.Propose` now returning a fourth value (the Apply result); toykv keeps its existing
+per-index reply registry and ignores the new return. Only the `v3.0.0` tag remains.
 
-**The two open `v1.0.0` asks (carried from the summary, unchanged):**
+**The two `v1.0.0` asks — both resolved:**
 
-1. **Constructibility (highest value).** Generalize the `rc.2` nil-`Clock` default to
-   `inproc.HubConfig.Clock`, and/or expose a narrow public `pkg/raft.Clock`. This closes
-   the whole constructibility class — it is why toykv's failover/partition harness wraps the
-   *HTTP* transport with a `chaosTransport` instead of using `inproc.Hub` (which is not
-   externally constructible at `rc.2`).
-2. **`Status().MatchIndex` self-ID.** The leader's own node id appears in the `MatchIndex`
-   map, which a naive `WAIT` implementation would miscount as a replica. Either document it
-   or expose a replica-only `ReplicaMatchIndex()`. toykv filters the self-id today; this is
-   the one real footgun a `WAIT`-implementing embedder hits.
+1. **Constructibility (highest value) — resolved.** `inproc.HubConfig.Clock` now nil-defaults to
+   the real clock in `NewHub`, so `inproc.Hub` is externally constructible with native
+   `Partition`/`Heal`. This closes the whole constructibility class. toykv **keeps** its
+   `chaosTransport` over the *HTTP* transport deliberately: it exercises the real on-wire path a
+   deployed cluster uses, which an in-process substitute would not.
+2. **`Status().MatchIndex` self-ID — resolved.** `raft.Node` now exposes `NodeID()`, so an
+   embedder can strip the leader's own id from the `MatchIndex` map without a side-channel.
+   toykv already stored its id at construction and **keeps** the working self-filter (no
+   `ReplicaMatchIndex()` accessor was added, so there is nothing lighter to migrate to).
 
 **Correctness bottom line.** Across the full M18–M23 arc, **no 🐞 correctness defect** was
 found in ToyRaft. Every documented guarantee (deterministic apply, apply-once ordering,
