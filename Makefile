@@ -1,4 +1,4 @@
-.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep bench-cluster bench-cluster-prep compat compat-prep chaos chaos-smoke ci hooks clean help
+.PHONY: build run cli tui fmt fmt-check vet lint test bench bench-prep bench-cluster bench-cluster-prep bench-throughput compat compat-prep chaos chaos-smoke ci hooks clean help
 
 GO          ?= go
 GOFMT       ?= gofmt
@@ -31,6 +31,7 @@ help:
 	@echo "  bench      - redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)"
 	@echo "  bench-cluster-prep - print cluster-bench methodology (leader-targeted)"
 	@echo "  bench-cluster      - redis-benchmark against a cluster leader (M23)"
+	@echo "  bench-throughput   - in-process SET throughput: standalone vs replicated 3-node (v3)"
 	@echo "  compat-prep- verify Docker + pull $(COMPAT_IMAGE) for the redis-cli sweep"
 	@echo "  compat     - run the redis-cli byte-compat sweep (§5) via Docker, no local install"
 	@echo "  chaos      - full soak: go test -race -timeout 10m ./test/chaos/..."
@@ -111,6 +112,13 @@ bench-cluster-prep:
 
 bench-cluster: bench-cluster-prep
 	redis-benchmark -h $(BENCH_HOST) -p $(BENCH_PORT) -t $(BENCH_TESTS) -n $(BENCH_N)
+
+# In-process throughput bench (v3): spins up servers in-process and drives SETs
+# through the real client, measuring toykv's own dispatch/replication cost with
+# no external tooling. Build-tagged `bench` so it stays out of `go test ./...`.
+# Override load with: make bench-throughput ARGS="-n=50000 -c=100 -valsize=128"
+bench-throughput:
+	go test -tags bench -run TestThroughputTable ./test/bench -v -timeout 300s $(if $(ARGS),-args $(ARGS),)
 
 compat-prep:
 	@if ! command -v docker >/dev/null 2>&1; then \
