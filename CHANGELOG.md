@@ -10,6 +10,68 @@ on `main` (see [`docs/ROADMAP.md`](./docs/ROADMAP.md)).
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-09-19
+
+Third release. Closes M18–M23 of the roadmap: toykv becomes a **replicated,
+leader-based, single-writer cluster** by embedding
+[ToyRaft](https://github.com/prajwalmahajan101/toyraft) `v1.0.0` as its
+consensus library. **Standalone mode stays byte-identical to v2** — replication
+is entirely opt-in behind `-replicate`, so there is no forced migration. The
+`3.0.0` major marks the new distributed capability and the ToyRaft `v1.0.0`
+dogfood gate closing, not a break to the standalone contract.
+
+### Added
+
+- Replicated cluster mode (M18–M19, tags `m18`/`m19`): `-replicate` opts into
+  a Raft-backed cluster over an embedded ToyRaft node. Mutating commands flow
+  through `Propose → replicate → Apply`; reads and local admin stay local.
+  `-peers <id@host:raftport[/clienthost:clientport],…>`, `-raft-addr`, and
+  `-raft-dir` wire the peer HTTP transport (a port distinct from the client
+  listener) and the file-backed Raft log. Single-member membership selects the
+  in-process single-node path; a larger odd membership wires the real
+  multi-node cluster. See
+  [ADR-0018](./docs/adr/0018-raft-embedding-command-envelope-and-statemachine-seam.md)
+  and [ADR-0019](./docs/adr/0019-cluster-mode-transport-and-raft-log-storage-layout.md).
+- Client write redirection + read model (M20, tag `m20`): a follower answers a
+  write with `NOTLEADER <leader-client-addr>`; the `ClusterClient` follows the
+  redirect automatically. Reads are leader-local by default; `READONLY` opts
+  into stale follower-local reads (no linearizable-read guarantee — ToyRaft
+  `v1` has no ReadIndex). See
+  [ADR-0020](./docs/adr/0020-write-redirection-and-cluster-read-consistency.md).
+- Replication ack + cluster observability (M21, tag `m21`): `WAIT <n>
+  <timeout-ms>` blocks until `n` remote replicas hold the write; `INFO
+  replication` reports role, leader, commit/apply offsets, and per-follower
+  lag; `toykv.raft.{is_leader,replication_lag}` OTel gauges. See
+  [ADR-0021](./docs/adr/0021-repl-ack-and-cluster-telemetry.md).
+- TUI v3 cluster view (M22, tag `m22`): role/leader/per-follower-lag panel
+  that flips between leader and follower views as the polled role changes.
+- Raft-bind security guard (M23): `checkRaftBind` refuses a non-loopback,
+  plaintext peer bind for a multi-node cluster unless `-raft-insecure` is set,
+  independent of `-protected-mode` (the peer transport has no auth/TLS —
+  ToyRaft's threat model is a trusted network). See the ADR-0019 M23 amendment
+  and [`docs/SECURITY.md`](./docs/SECURITY.md).
+- Cluster timing flags (M23): `-election-timeout-min/-max` and
+  `-heartbeat-interval` (zero = ToyRaft defaults, so M19 behaviour is
+  unchanged) to steady the leader under load.
+- Benchmarks (M23): a cluster redis-benchmark harness (`make bench-cluster`)
+  and an in-process throughput bench (`make bench-throughput`, build-tagged
+  `bench`) measuring standalone vs replicated 3-node SET throughput — see
+  [`docs/BENCHMARKS.md`](./docs/BENCHMARKS.md).
+- `deploy/cluster` Docker Compose stack + root `Dockerfile` for a local 3-node
+  cluster; README 3-node quickstart; PRD/HLD/LLD replication deltas.
+- [`docs/TOYRAFT-MIGRATION-REPORT.md`](./docs/TOYRAFT-MIGRATION-REPORT.md): the
+  dogfooding report delivered to ToyRaft as its `v1.0.0` gate feedback —
+  0 correctness defects, all friction resolved by `v1.0.0`.
+
+### Changed
+
+- Depend on ToyRaft `v1.0.0` (bumped from `v1.0.0-rc.2`). The one breaking
+  upstream change is `raft.Node.Propose` returning a fourth value (the Apply
+  result); toykv keeps its per-index reply registry and ignores it. Both
+  dogfood asks are resolved upstream (`raft.Node.NodeID()`; nil-defaulting
+  `inproc.HubConfig.Clock`).
+- `serverVersion` `2.0.0 → 3.0.0` (HELLO / INFO / `build.info` gauge).
+
 ## [2.0.0] — 2026-07-18
 
 Second release. Closes M10–M17 of the roadmap: a deployable,
@@ -242,6 +304,8 @@ hand-curated highlights.
   BENCHMARKS, RELEASE_PLAN, SECURITY, CONTRIBUTING, ADR index.
 - MIT licence.
 
-[Unreleased]: https://github.com/prajwalmahajan101/toykv/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/prajwalmahajan101/toykv/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/prajwalmahajan101/toykv/compare/v2.0.0...v3.0.0
+[2.0.0]: https://github.com/prajwalmahajan101/toykv/compare/v1.0.0...v2.0.0
 [v1.0.0]: https://github.com/prajwalmahajan101/toykv/releases/tag/v1.0.0
 [v0.0.0]: https://github.com/prajwalmahajan101/toykv/releases/tag/v0.0.0
