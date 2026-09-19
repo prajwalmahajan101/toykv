@@ -122,6 +122,84 @@ targeting the leader:
 > standalone `GET` band (~35 k rps, sub-ms p50). The point is the write/read *delta*, not a
 > headline number — the anti-targets below still apply.
 
+### In-process throughput (v3)
+
+A second, complementary lens on the same replication cost. Where the `bench-cluster`
+rows above are **end-to-end** (`valkey-benchmark` → Docker bridge → `appendfsync=always`,
+no pipelining), this one is **in-process**: `make bench-throughput` spins the servers up
+inside the test binary and drives SETs through toykv's own `internal/client`, so it isolates
+the dispatch + Raft round-trip cost with no external tooling, no Docker bridge, and no AOF
+fsync (standalone runs `Dir:""`). Same box, two angles: the deployed-path number and the
+protocol-path number.
+
+```bash
+make bench-throughput                                   # defaults: n=20000, c=50, valsize=64
+make bench-throughput ARGS="-c=4 -n=2000 -valsize=256"  # low-concurrency latency view
+```
+
+- **standalone** — one `server.New` with AOF disabled; `client.Dial` per worker.
+- **replicated 3-node** — three `server.New` with `Replicate:true` over the real HTTP peer
+  transport (loopback), `-heartbeat-interval=50ms`, `-election-timeout-min/max=500ms/1s`
+  (heartbeat is ToyRaft's default; ToyRaft's driver tick period **equals** the heartbeat
+  interval, so a wider heartbeat directly slows commit — the earlier `300ms` borrowed from the
+  routing harness inflated replicated latency for no benefit here); `client.DialCluster` per
+  worker so `NOTLEADER` redirects follow.
+- **Load model** — `c` workers, each its own conn, split `n` total SETs evenly; throughput =
+  `n / wallclock`; percentiles via sorted per-op latency (nearest-rank).
+
+**Host:** Linux 7.0.10-arch1-1 x86_64, 13th Gen Intel Core i7-1355U, 16 GiB RAM (same box as
+the v2 run). Binary: `feat/toyraft-v1` on ToyRaft `v1.0.0`. Recorded 2026-09-19.
+
+Default load (`n=20000`, `c=50`, 64-byte values) — **throughput view**:
+
+```
+┌───────────────────┬──────────────┬─────────┬─────────┬─────────┐
+│ Mode              │ Throughput   │ p50     │ p95     │ p99     │
+├───────────────────┼──────────────┼─────────┼─────────┼─────────┤
+│ standalone        │ 123496 msg/s │ 205µs   │ 1.25ms  │ 3.36ms  │
+│ replicated 3-node │ 1002 msg/s   │ 50.09ms │ 75.19ms │ 91.49ms │
+└───────────────────┴──────────────┴─────────┴─────────┴─────────┘
+```
+
+Low-concurrency load (`c=4`, `n=2000`, 256-byte values) — **latency view** (matches the ToyMQ
+sibling-project bench for a direct comparison):
+
+```
+┌───────────────────┬─────────────┬────────┬────────┬────────┐
+│ Mode              │ Throughput  │ p50    │ p95    │ p99    │
+├───────────────────┼─────────────┼────────┼────────┼────────┤
+│ standalone        │ 41887 msg/s │ 77µs   │ 166µs  │ 399µs  │
+│ replicated 3-node │ 1356 msg/s  │ 2.70ms │ 3.86ms │ 4.66ms │
+└───────────────────┴─────────────┴────────┴────────┴────────┘
+```
+
+> **Reading these.** Standalone in-process SET clears **~123 k msg/s** at sub-ms p50 — the
+> RESP+mutex dispatch path with no fsync in the way. Replication drops that to **~1 k msg/s**:
+> every SET is `Propose → HTTP-replicate → commit → Apply`, one full consensus round-trip.
+>
+> **The two tables measure different things, and the p50 gap between them is a queue-depth
+> artifact, not a slower code path.** Both nodes commit through a single serial Raft log, so
+> `latency ≈ concurrency × per-entry-commit-time`. At `c=50` (default), ~50 SETs sit in flight
+> behind one commit stream → **~50 ms p50** even though each commit is ~1 ms. Drop to `c=4` and
+> the same binary shows **~2.3 ms p50** — the queue drained, per-op latency exposed. Throughput
+> barely moves between them (1002 vs 1356 msg/s) because throughput ≈ `1 / commit-time`
+> regardless of how deep the queue is. **Report replicated *throughput* from the default run and
+> replicated *latency* from the `c=4` run** — reading p50 off the high-concurrency table
+> overstates the per-op cost ~20×.
+>
+> **vs the ToyMQ sibling project** (same ToyRaft `v1.0.0`, `docker-compose.cluster.yml`, 4
+> producers × 2000 × 256-byte msgs): ToyMQ records **2485 msg/s / 1.3 ms p50** replicated; toykv
+> here is **1356 msg/s / 2.70 ms p50** on the matched `c=4` load — same order, ~1.8× apart on the
+> per-entry commit cost (toykv's SET envelope + apply-to-store-under-mutex vs ToyMQ's WAL
+> append). ToyMQ's widely-cited "**~100× improvement**" is *not* replicated-vs-standalone — it is
+> the ToyRaft `rc.3 → v1.0.0` flush-on-`Propose` fix (FRICTION-08) removing a ~150 ms
+> heartbeat-tick commit floor (`~150 ms → ~1.3 ms` p50). toykv inherits that same fix on the
+> `v1.0.0` bump; both projects' replicated path is still slower than their standalone (consensus
+> is not free), which is the honest and expected result.
+>
+> Numbers vary run-to-run on a thermally-throttling mobile i7 (standalone swings ~90 k–142 k);
+> recorded, not a target.
+
 ## Reading the numbers
 
 - **`SET` under `always`** is gated by `fsync` round-trip. Compare to your disk's `fdatasync` latency, not Redis.
