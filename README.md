@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml/badge.svg)](https://github.com/prajwalmahajan101/toykv/actions/workflows/ci.yml)
 
-> Single-node in-memory KV store in Go — **deployable, safe-by-default, observable**. RESP2 wire protocol (RESP3 opt-in via `HELLO 3`), string/list/hash value types, AOF persistence, TTL, `AUTH`+TLS with a protected-mode default, `INFO`/`SCAN` introspection, OpenTelemetry (logs/metrics/traces → LGTM), companion CLI and TUI.
+> In-memory KV store in Go — **deployable, safe-by-default, observable, replicated**. RESP2 wire protocol (RESP3 opt-in via `HELLO 3`), string/list/hash value types, AOF persistence, TTL, `AUTH`+TLS with a protected-mode default, `INFO`/`SCAN` introspection, OpenTelemetry (logs/metrics/traces → LGTM), and an opt-in Raft-backed multi-node cluster (embedded [ToyRaft](https://github.com/prajwalmahajan101/toyraft)). Companion CLI and TUI.
 
 Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (append, replay, durable), toykv exercises the **map** pattern (in-memory, mutable, expirable). Two foundational network-server primitives, one Go module each.
 
-**Status:** M0–M17 shipped — v2.0.0 (deployable, safe-by-default, observable single-node KV). See [ROADMAP](./docs/ROADMAP.md) and [CHANGELOG](./CHANGELOG.md).
+**Status:** M0–M23 shipped — v3.0.0 (deployable, safe-by-default, observable KV with an opt-in Raft-backed cluster). Standalone mode stays byte-identical to v2; replication is entirely opt-in behind `-replicate`. See [ROADMAP](./docs/ROADMAP.md) and [CHANGELOG](./CHANGELOG.md).
 
 ## What it is
 
@@ -19,8 +19,8 @@ Companion to [toymq](../toymq). Where toymq exercises the **log** pattern (appen
 ## What it isn't
 
 - A Redis replacement.
-- Production-ready (no auth, no TLS).
-- Multi-node, replicated, or clustered.
+- A high-throughput cluster — replication is a correctness demo, not a throughput target (see the cluster benchmarks below).
+- Linearizable on follower reads — ToyRaft `v1` has no ReadIndex, so `READONLY` follower reads are stale-tolerant.
 
 > 🔒 **Security posture (v2).** `AUTH` (`-requirepass`, constant-time compare) and TLS (`-tls-cert`/`-tls-key`, min 1.2) lift v1's localhost-only ceiling, and **protected mode** refuses an unauthenticated non-loopback bind by default — so an accidental `0.0.0.0` exposure fails closed rather than serving the world. Still single-node with no IP allowlist and no RBAC. The full threat model lives in [SECURITY.md](./docs/SECURITY.md); the v2.0.0 release-gate audit (incl. two pre-auth codec DoS bounds it added) is in [SECURITY-REVIEW-v2.md](./docs/SECURITY-REVIEW-v2.md).
 
@@ -31,7 +31,7 @@ Three options.
 **1. Pre-built binary (recommended).** Grab the archive for your OS/arch from the [latest release](https://github.com/prajwalmahajan101/toykv/releases/latest):
 
 ```sh
-VERSION=v1.0.0
+VERSION=v3.0.0
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')      # darwin | linux
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 curl -L "https://github.com/prajwalmahajan101/toykv/releases/download/${VERSION}/toykv_${VERSION#v}_${OS}_${ARCH}.tar.gz" \
