@@ -75,6 +75,12 @@ func (p *partitionState) blocked(a, b raft.NodeID) bool {
 // inbound (a delivered message from a cut peer). Dropping mirrors a real network
 // partition; ToyRaft's heartbeat-retry model already treats Send as best-effort,
 // so a dropped message is indistinguishable from a lost packet.
+//
+// ToyRaft v1.0.0 makes inproc.Hub externally constructible with native
+// Partition/Heal (FRICTION-07 resolved), so this failover suite could drive
+// chaos through inproc.Hub instead. We deliberately keep chaosTransport: it wraps
+// the real HTTP transport, so the failover tests exercise the actual on-wire path
+// a deployed cluster uses, not an in-process substitute.
 type chaosTransport struct {
 	self  raft.NodeID
 	inner raft.Transport

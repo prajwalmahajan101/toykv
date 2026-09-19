@@ -8,7 +8,8 @@
 ## Context
 
 v3.0 makes toykv a replicated cluster by embedding **ToyRaft**
-(`github.com/prajwalmahajan101/toyraft v1.0.0-rc.1`, frozen public API). M18 is
+(`github.com/prajwalmahajan101/toyraft`, now pinned at the tagged `v1.0.0`;
+integrated against the frozen public API from `v1.0.0-rc.1`). M18 is
 the foundational, highest-blast-radius milestone: it proves the state-machine
 seam on a **single node** before any distributed complexity (multi-node
 transport, election, and file-backed Raft storage are M19). toykv's running

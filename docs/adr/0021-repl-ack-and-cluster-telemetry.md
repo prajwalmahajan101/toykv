@@ -56,7 +56,7 @@ Both gauges use the observable-gauge pattern already established in `registerObs
 - The propose span makes `raft.propose` latency visible in Grafana alongside command duration; the lag gauges close the observability gap between "cluster is running" and "cluster is caught up."
 
 **Negative:**
-- `WAIT` polls at 50 ms; a follower that catches up mid-interval will not be counted until the next tick. Maximum false-negative window: 50 ms. This is accepted — the alternative (callback into ToyRaft on MatchIndex advance) would require an internal API not exposed by `rc.2`.
+- `WAIT` polls at 50 ms; a follower that catches up mid-interval will not be counted until the next tick. Maximum false-negative window: 50 ms. This is accepted. When the ADR was written, the event-driven alternative (a callback when `MatchIndex` advances) required an internal API not exposed by `rc.2`. ToyRaft `v1.0.0` now exposes `raft.Node.NotifyC()` (a coalescing progress signal) that could drive this, but the 50 ms poll is retained for v3.0 — it is simple and the false-negative window is bounded; migrating `WAIT` to `NotifyC()` is a v3.x refinement.
 - Lag gauge is leader-only; follower nodes emit nothing. Operators must scrape the current leader to get replica-lag signals.
 
 ## Alternatives considered
