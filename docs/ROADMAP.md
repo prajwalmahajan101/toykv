@@ -247,8 +247,12 @@ Deferred from the committed M10–M17 cut so v2 stays a focused "usable single-n
 | Observability | Native Prometheus `/metrics` scrape endpoint behind `-metrics-addr` | RED metrics now ship via M16's OpenTelemetry → Mimir (OTLP push); a pull-based Prometheus scrape endpoint remains optional/deferred |
 | Persistence | RDB snapshots alongside AOF (opt-in, `-rdb-interval`) | Faster cold starts on large datasets |
 | Reliability | `-aof-truncate` flag to repair partial tails | Operationally important once auth lifts the deployment ceiling |
+| Performance | Pipelined benchmark run — `redis-benchmark -P <n>` (and CSV row) | The single Redis throughput lever left unmeasured; `docs/BENCHMARKS.md` records only non-pipelined runs, which understates real-world ceiling. No code change — a bench + a recorded number |
+| Performance | Shard the store `sync.RWMutex` (N-way, key-hashed) | Every mutating command serializes on one lock today (the M2 "accepted contention" risk). Sharding lifts the ceiling `redis-benchmark -c` contention reveals. Deferred until a pipelined bench shows the lock, not the wire, is the bound |
 | Content | Hashnode post: *"Three persistence policies, one append-only file"* | Owed since v1 — write after v2 ships, not before |
 | Integration | `prajwal-resilience-kit` Redis-adapter test target | First external consumer; validates AUTH + commands |
+
+> **Redis-parity gaps (the "how does it measure up" scorecard).** For the record, the known gaps vs real Redis and where each is tracked: **pipelining** + **sharded lock** → the two Performance rows above; **RDB snapshots** → the Persistence row above; **sorted sets / sets** → [v3.x backlog](#v3x-backlog-not-in-committed-v30-scope) (`ZADD`/`SADD` families); **pub/sub + keyspace events** → v3.x backlog. These are the deliberate omissions that keep toykv a learning artifact, not a Redis re-implementation — none is committed scope.
 
 **Breaking risk:** two, both deliberate and documented. (1) AOF format bump to **v3** to encode list/hash records → version-gated, replays v1, v2, and v3 records (M11). (2) **Protected mode** (M15) refuses a non-loopback bind without auth — a behavioural break to v1's deployment contract, overridable via `-protected-mode no`. This is the change that earns the `2.0.0` major; RESP3 is wire-only and additive and never forces it. **Observability (M16) adds no breaking risk** — it is off unless an OTLP endpoint is configured.
 
