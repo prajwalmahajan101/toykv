@@ -187,7 +187,8 @@ func newMultiNode(cfg Config, sm *StateMachine) (*Node, error) {
 	}
 
 	// Clock is left unset — pkg/transport/http defaults it to the real clock
-	// (ToyRaft v1.0.0-rc.2; internal/clock is not externally constructible).
+	// (ToyRaft v1.0.0; nil Clock nil-defaults to the real clock, so embedders
+	// need not construct internal/clock).
 	transport, err := httptransport.New(httptransport.Config{
 		NodeID:      selfID,
 		ListenAddr:  selfAddr,
@@ -300,7 +301,7 @@ func (n *Node) Stop() error {
 // under the returned log index. A propose error (not leader, leadership lost,
 // node stopped) surfaces to the caller.
 func (n *Node) Propose(ctx context.Context, argv [][]byte) (resp.Value, error) {
-	idx, _, err := n.raft.Propose(ctx, Encode(argv))
+	idx, _, _, err := n.raft.Propose(ctx, Encode(argv))
 	if err != nil {
 		return resp.Value{}, fmt.Errorf("cluster: propose: %w", err)
 	}
